@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' show ClientException;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../config/bulletin_spec.dart';
 import '../config/env_config.dart';
 import '../services/anthropic_claude_service.dart';
 import '../services/chat_repository.dart';
@@ -46,21 +45,21 @@ class _PreAuthChatScreenState extends State<PreAuthChatScreen> {
   String? _error;
 
   static String get _kAskName =>
-      'Thanks for reaching out! What **name** should we use for your $kBulletinAppTitle support history?';
+      'Hey, thanks for reaching out. What name should I call you?';
 
   static String get _kAskEmail =>
-      'Got it. What **email** should we use so we can match this chat later?';
+      'Nice to meet you. What is your email?';
 
   static const _kAskEmailAgain =
       'That doesn\'t look like a valid email. Please send a working address (e.g. name@company.com).';
 
   static String get _kAskPhone =>
-      'Thanks. What **phone number** can we use if we need to follow up?';
+      'Thanks. What phone number can we use if we need to follow up?';
 
   static const _kAskPhoneAgain =
-      'Please send a **phone number** with enough digits (include area code if applicable).';
+      'Please send a phone number with enough digits (include area code if applicable).';
 
-  static const _kAskNameAgain = 'Please send at least **2 characters** for your name.';
+  static const _kAskNameAgain = 'Please send at least 2 characters for your name.';
 
   @override
   void dispose() {
@@ -193,10 +192,10 @@ class _PreAuthChatScreenState extends State<PreAuthChatScreen> {
               ? priorMessages.map((m) => ChatTurn(role: m.role, text: m.content)).toList()
               : _claudeHistory(),
           nextUserMessage: hasPriorConversation
-              ? 'The same customer just came back and matched their name, email, and phone with an existing record. Ask one short question about whether they want to continue the previous conversation, then offer next-step help.'
+              ? 'The same customer returned and matched their contact record. Reply in a warm, human tone and ask for their name to begin helping right away. Do not mention conversation history.'
               : isReturningContact
-                  ? 'A contact match was found but there is no saved conversation history. Welcome them back and ask what they need help with today.'
-                  : 'I shared my name, email, and phone for support. Please welcome me briefly and ask what Stealth product I use and what I need help with today.',
+                  ? 'A contact match was found but there is no saved message thread. Reply warmly, ask for their name, and ask what they need help with.'
+                  : 'I shared my name, email, and phone for support. Reply warmly, ask for my name, and ask what I need help with today.',
           additionalSystemContext: profile.anthropicContextBlock,
         );
         await repo.insertChatMessage(
