@@ -18,6 +18,25 @@ class ChatRepository {
 
   String? get _userId => _client.auth.currentUser?.id;
 
+  /// Finds an existing contact row by same name + email + phone.
+  static Future<String?> findExistingContactId({
+    required SupabaseClient client,
+    required String fullName,
+    required String email,
+    required String phone,
+  }) async {
+    final row = await client
+        .from('chat_contacts')
+        .select('id')
+        .ilike('full_name', fullName.trim())
+        .ilike('email', email.trim())
+        .eq('phone', phone.trim())
+        .limit(1)
+        .maybeSingle();
+    if (row == null) return null;
+    return row['id'] as String?;
+  }
+
   /// Creates a saved contact row (name, email, phone). Caller should persist [ContactSessionStore.setContactId].
   static Future<String> createContact({
     required SupabaseClient client,

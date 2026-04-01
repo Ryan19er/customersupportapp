@@ -4,12 +4,10 @@ import '../models/customer_profile.dart';
 import '../services/chat_repository.dart';
 import '../screens/chat_screen.dart';
 import '../screens/guides_screen.dart';
-import '../screens/tickets_screen.dart';
 import '../screens/training_screen.dart';
-import '../screens/account_screen.dart';
 import '../theme/stealth_theme.dart';
 
-/// Bulletin: single app shell — Chat, Guides, Tickets, Training, Account (tabs).
+/// Bulletin: single app shell — Chat, Guides, Training (tabs).
 class StealthMainShell extends StatefulWidget {
   const StealthMainShell({
     super.key,
@@ -40,13 +38,7 @@ class _StealthMainShellState extends State<StealthMainShell> {
         onSignedOut: widget.onSessionCleared,
       ),
       GuidesScreen(profile: widget.profile),
-      TicketsScreen(repository: widget.repository),
       TrainingScreen(profile: widget.profile),
-      AccountScreen(
-        repository: widget.repository,
-        profile: widget.profile,
-        onSignedOut: widget.onSessionCleared,
-      ),
     ];
 
     return Scaffold(
@@ -71,19 +63,9 @@ class _StealthMainShellState extends State<StealthMainShell> {
             label: 'Guides',
           ),
           NavigationDestination(
-            icon: Icon(Icons.confirmation_number_outlined),
-            selectedIcon: Icon(Icons.confirmation_number),
-            label: 'Tickets',
-          ),
-          NavigationDestination(
             icon: Icon(Icons.school_outlined),
             selectedIcon: Icon(Icons.school),
             label: 'Training',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.person_outline),
-            selectedIcon: Icon(Icons.person),
-            label: 'Account',
           ),
         ],
       ),

@@ -152,13 +152,20 @@ class _PreAuthChatScreenState extends State<PreAuthChatScreen> {
       );
       try {
         final client = Supabase.instance.client;
-
-        final contactId = await ChatRepository.createContact(
+        final existingContactId = await ChatRepository.findExistingContactId(
           client: client,
           fullName: _name!.trim(),
           email: _email!.trim(),
           phone: _phone!.trim(),
         );
+        final isReturningContact = existingContactId != null;
+        final contactId = existingContactId ??
+            await ChatRepository.createContact(
+              client: client,
+              fullName: _name!.trim(),
+              email: _email!.trim(),
+              phone: _phone!.trim(),
+            );
         await ContactSessionStore.setContactId(contactId);
 
         final repo = ChatRepository(client, contactId: contactId);
@@ -168,18 +175,28 @@ class _PreAuthChatScreenState extends State<PreAuthChatScreen> {
         }
 
         final sid = await repo.getOrCreateSessionId();
-        for (final m in _messages) {
-          await repo.insertChatMessage(
-            sessionId: sid,
-            role: m.role,
-            content: m.content,
-          );
+        final priorMessages = await repo.loadMessages(sid);
+        final hasPriorConversation = priorMessages.isNotEmpty;
+
+        if (!hasPriorConversation) {
+          for (final m in _messages) {
+            await repo.insertChatMessage(
+              sessionId: sid,
+              role: m.role,
+              content: m.content,
+            );
+          }
         }
 
         final intro = await claude.complete(
-          history: _claudeHistory(),
-          nextUserMessage:
-              'I shared my name, email, and phone for support. Please welcome me briefly and ask what Stealth product I use and what I need help with today.',
+          history: hasPriorConversation
+              ? priorMessages.map((m) => ChatTurn(role: m.role, text: m.content)).toList()
+              : _claudeHistory(),
+          nextUserMessage: hasPriorConversation
+              ? 'The same customer just came back and matched their name, email, and phone with an existing record. Ask one short question about whether they want to continue the previous conversation, then offer next-step help.'
+              : isReturningContact
+                  ? 'A contact match was found but there is no saved conversation history. Welcome them back and ask what they need help with today.'
+                  : 'I shared my name, email, and phone for support. Please welcome me briefly and ask what Stealth product I use and what I need help with today.',
           additionalSystemContext: profile.anthropicContextBlock,
         );
         await repo.insertChatMessage(
