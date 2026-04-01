@@ -376,7 +376,7 @@ class _PreAuthChatScreenState extends State<PreAuthChatScreen> {
                             ),
                           ],
                         ),
-                        child: Text(
+                        child: SelectableText(
                           m.content,
                           style: TextStyle(
                             color: user
@@ -384,6 +384,11 @@ class _PreAuthChatScreenState extends State<PreAuthChatScreen> {
                                 : StealthColors.mist.withValues(alpha: 0.95),
                             height: 1.35,
                           ),
+                          contextMenuBuilder: (context, editableTextState) {
+                            return AdaptiveTextSelectionToolbar.editableText(
+                              editableTextState: editableTextState,
+                            );
+                          },
                         ),
                       ),
                     );

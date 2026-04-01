@@ -227,12 +227,17 @@ class _ChatScreenState extends State<ChatScreen> {
                           ),
                         ],
                       ),
-                      child: Text(
+                      child: SelectableText(
                         m.content,
                         style: TextStyle(
                           color: user ? Colors.white : StealthColors.mist.withValues(alpha: 0.95),
                           height: 1.35,
                         ),
+                        contextMenuBuilder: (context, editableTextState) {
+                          return AdaptiveTextSelectionToolbar.editableText(
+                            editableTextState: editableTextState,
+                          );
+                        },
                       ),
                     ),
                   );

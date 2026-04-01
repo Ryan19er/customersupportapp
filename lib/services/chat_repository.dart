@@ -18,6 +18,11 @@ class ChatRepository {
 
   String? get _userId => _client.auth.currentUser?.id;
 
+  static String _normalizeName(String s) =>
+      s.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+  static String _normalizeEmail(String s) => s.trim().toLowerCase();
+  static String _normalizePhone(String s) => s.replaceAll(RegExp(r'[^0-9]'), '');
+
   /// Finds an existing contact row by same name + email + phone.
   static Future<String?> findExistingContactId({
     required SupabaseClient client,
@@ -25,12 +30,15 @@ class ChatRepository {
     required String email,
     required String phone,
   }) async {
+    final normName = _normalizeName(fullName);
+    final normEmail = _normalizeEmail(email);
+    final normPhone = _normalizePhone(phone);
     final row = await client
         .from('chat_contacts')
         .select('id')
-        .ilike('full_name', fullName.trim())
-        .ilike('email', email.trim())
-        .eq('phone', phone.trim())
+        .eq('normalized_name', normName)
+        .eq('normalized_email', normEmail)
+        .eq('normalized_phone', normPhone)
         .limit(1)
         .maybeSingle();
     if (row == null) return null;
