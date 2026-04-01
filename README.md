@@ -13,8 +13,12 @@ Bulletin-scope app: **AI-led onboarding** (no login-first gate), **Claude** chat
 
 2. **Environment**
    - Copy `assets/.env.example` to `assets/.env`.
-   - Set `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `ANTHROPIC_API_KEY`.
+   - Set `SUPABASE_URL`, `SUPABASE_ANON_KEY` (and optional `ANTHROPIC_MODEL`).
    - Never put the **database password** or **service_role** key in the app.
+
+3. **Edge Function (required for web AI)**
+   - Deploy `supabase/functions/anthropic-chat`.
+   - Set `ANTHROPIC_API_KEY` in **Supabase secrets** (server-side), not in Flutter web env.
 
 3. **Run**
 
