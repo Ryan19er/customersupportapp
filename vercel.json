@@ -1,6 +1,6 @@
 {
-  "buildCommand": "flutter build web",
-  "installCommand": "flutter pub get",
+  "installCommand": "if [ ! -x .vercel/flutter/bin/flutter ]; then rm -rf .vercel/flutter && git clone --depth 1 -b stable https://github.com/flutter/flutter.git .vercel/flutter; fi && ./.vercel/flutter/bin/flutter --disable-analytics --version && ./.vercel/flutter/bin/flutter pub get",
+  "buildCommand": "./.vercel/flutter/bin/flutter --disable-analytics build web --release",
   "outputDirectory": "build/web",
   "rewrites": [
     {
