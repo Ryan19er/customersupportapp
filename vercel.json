@@ -1,0 +1,12 @@
+{
+  "buildCommand": "flutter build web",
+  "installCommand": "flutter pub get",
+  "outputDirectory": "build/web",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
+
