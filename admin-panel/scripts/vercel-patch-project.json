@@ -1,0 +1,7 @@
+{
+  "rootDirectory": "admin-panel",
+  "framework": "nextjs",
+  "buildCommand": "npm run build:vercel",
+  "installCommand": "npm ci",
+  "outputDirectory": null
+}

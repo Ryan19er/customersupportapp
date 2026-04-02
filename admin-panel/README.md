@@ -35,18 +35,27 @@ Then `/` is the Flutter app and `/admin` is this panel.
 
 **Stealth Development** team on Vercel, project name **`customersupportapp`**. In the CLI, the team appears as **Team Stealth** with slug **`team-stealth-fed896d2`**.
 
-Deploy from the **Flutter app root** (`stealth_support_app`, one level above `admin-panel`) so the build can see `pubspec.yaml` and run `flutter build web`. The Vercel CLI is a dev dependency in `admin-panel`; npm scripts run `vercel` from the parent directory.
+Work inside **`admin-panel`** for CLI commands (this folder is linked to the project; Vercel **Root Directory** is `admin-panel`, with **source outside root** enabled so Flutter can build from the parent repo).
 
 ### One-time: login and link
 
 ```bash
-cd stealth_support_app   # repo root for this app (contains pubspec.yaml + admin-panel/)
-npm install --prefix admin-panel
+cd admin-panel
+npm install
 npx vercel login
 npx vercel link --yes --scope team-stealth-fed896d2 --project customersupportapp
 ```
 
-That attaches this folder to **Stealth Development → customersupportapp**. To link interactively instead, run `npx vercel link` from `stealth_support_app` and pick that team and project.
+### Apply / re-apply project settings (CLI + API)
+
+This updates the Vercel project to **Next.js**, **Root Directory `admin-panel`**, and the correct build/install commands (same as `vercel.json`):
+
+```bash
+cd admin-panel
+npm run vercel:configure
+```
+
+Uses `vercel api … PATCH` with `scripts/vercel-patch-project.json`. Run again after creating a new Vercel project if needed.
 
 ### Environment variables
 

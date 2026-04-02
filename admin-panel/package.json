@@ -9,11 +9,12 @@
     "sync:public": "bash scripts/sync-flutter-public.sh",
     "start": "next start",
     "lint": "eslint",
-    "vercel": "cd .. && vercel",
-    "vercel:link": "cd .. && vercel link",
-    "vercel:deploy": "cd .. && vercel deploy",
-    "vercel:prod": "cd .. && vercel --prod",
-    "vercel:env": "cd .. && vercel env pull admin-panel/.env.local"
+    "vercel": "vercel",
+    "vercel:link": "vercel link",
+    "vercel:deploy": "vercel deploy",
+    "vercel:prod": "vercel --prod",
+    "vercel:env": "vercel env pull .env.local",
+    "vercel:configure": "vercel api \"/v9/projects/customersupportapp\" -X PATCH --scope team-stealth-fed896d2 --input ./scripts/vercel-patch-project.json"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.101.1",
