@@ -102,12 +102,14 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _send() async {
     final text = _input.text.trim();
     if (text.isEmpty || _sessionId == null || _sending) return;
+    final startedAt = DateTime.now();
 
     setState(() {
       _sending = true;
       _error = null;
     });
     _input.clear();
+    _scrollToEnd();
 
     try {
       await widget.repository.appendExchange(
@@ -127,6 +129,11 @@ class _ChatScreenState extends State<ChatScreen> {
         },
       );
       final fresh = await widget.repository.loadMessages(_sessionId!);
+      final elapsed = DateTime.now().difference(startedAt);
+      const minThinking = Duration(milliseconds: 700);
+      if (elapsed < minThinking) {
+        await Future<void>.delayed(minThinking - elapsed);
+      }
       if (!mounted) return;
       setState(() => _messages = fresh);
       _scrollToEnd();
@@ -199,8 +206,41 @@ class _ChatScreenState extends State<ChatScreen> {
               child: ListView.builder(
                 controller: _scroll,
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                itemCount: _messages.length,
+                itemCount: _messages.length + (_sending ? 1 : 0),
                 itemBuilder: (context, i) {
+                  if (_sending && i == _messages.length) {
+                    return Align(
+                      alignment: Alignment.centerLeft,
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        constraints: BoxConstraints(
+                          maxWidth: MediaQuery.sizeOf(context).width * 0.88,
+                        ),
+                        decoration: BoxDecoration(
+                          gradient: StealthGradients.assistantBubble,
+                          borderRadius: BorderRadius.circular(14).copyWith(
+                            bottomLeft: const Radius.circular(4),
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.35),
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Text(
+                          'Stealth Support is typing...',
+                          style: TextStyle(
+                            color: StealthColors.mist.withValues(alpha: 0.9),
+                            fontStyle: FontStyle.italic,
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                    );
+                  }
                   final m = _messages[i];
                   final user = m.role == 'user';
                   return Align(
