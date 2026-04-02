@@ -1,29 +1,64 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { getSupabaseAdminClient } from "@/lib/supabase-server";
+import { getSupabaseAdminClientSafe } from "@/lib/supabase-server";
 import { extractQueueItemsFromAssistantText } from "@/lib/training-queue-parse";
 import { trainingSystemPrompt } from "@/lib/training-system-prompt";
 
-const schema = z.object({
+const threadIdSchema = z.string().uuid();
+
+const postSchema = z.object({
   message: z.string().min(1),
   created_by: z.string().min(1),
+  thread_id: z.string().uuid(),
 });
+
+export async function GET(req: NextRequest) {
+  const raw = req.nextUrl.searchParams.get("thread_id");
+  const tid = raw ? threadIdSchema.safeParse(raw) : null;
+  if (!tid?.success) {
+    return NextResponse.json({ error: "thread_id (uuid) required" }, { status: 400 });
+  }
+
+  const init = getSupabaseAdminClientSafe();
+  if (!init.ok) {
+    return NextResponse.json({ error: init.error }, { status: 503 });
+  }
+  const supabase = init.client;
+
+  const { data, error } = await supabase
+    .from("training_chat_messages")
+    .select("id, role, content, created_at, created_by")
+    .eq("thread_id", tid.data)
+    .order("created_at", { ascending: true })
+    .limit(200);
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ messages: data ?? [] });
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
-  const parsed = schema.safeParse(body);
+  const parsed = postSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }
 
-  const supabase = getSupabaseAdminClient();
+  const init = getSupabaseAdminClientSafe();
+  if (!init.ok) {
+    return NextResponse.json({ error: init.error }, { status: 503 });
+  }
+  const supabase = init.client;
   const input = parsed.data;
 
   const saveUser = await supabase.from("training_chat_messages").insert({
     role: "user",
     content: input.message,
     created_by: input.created_by,
+    thread_id: input.thread_id,
   });
   if (saveUser.error) {
     return NextResponse.json({ error: saveUser.error.message }, { status: 500 });
@@ -32,6 +67,7 @@ export async function POST(req: NextRequest) {
   const { data: historyRows } = await supabase
     .from("training_chat_messages")
     .select("role, content")
+    .eq("thread_id", input.thread_id)
     .order("created_at", { ascending: true })
     .limit(48);
 
@@ -72,6 +108,7 @@ export async function POST(req: NextRequest) {
     role: "assistant",
     content: displayText,
     created_by: input.created_by,
+    thread_id: input.thread_id,
   });
   if (saveAssistant.error) {
     return NextResponse.json({ error: saveAssistant.error.message }, { status: 500 });
@@ -96,4 +133,3 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ reply: displayText, queued });
 }
-

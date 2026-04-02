@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { readJsonBody } from "@/lib/safe-fetch-json";
 import { AdminHelp } from "./AdminHelp";
 
 type SessionRow = {
@@ -51,6 +52,20 @@ type CustomerQuestionQueueRow = {
   resolved_by: string | null;
 };
 
+type TrainingThreadRow = {
+  id: string;
+  title: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type TrainingChatMsg = {
+  id?: string;
+  role: string;
+  content: string;
+};
+
 export default function AdminPage() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
@@ -68,10 +83,19 @@ export default function AdminPage() {
   const [machineModel, setMachineModel] = useState("");
   const [machineSerial, setMachineSerial] = useState("");
   const [tags, setTags] = useState("");
+  const [priorAssistantSummary, setPriorAssistantSummary] = useState("");
 
   const [trainingInput, setTrainingInput] = useState("");
   const [trainingBusy, setTrainingBusy] = useState(false);
-  const [trainingLog, setTrainingLog] = useState<Array<{ role: string; content: string }>>([]);
+  const [trainingLog, setTrainingLog] = useState<TrainingChatMsg[]>([]);
+  const [trainingThreads, setTrainingThreads] = useState<TrainingThreadRow[]>([]);
+  const [selectedTrainingThreadId, setSelectedTrainingThreadId] = useState<string | null>(null);
+  const [newThreadTitle, setNewThreadTitle] = useState("");
+  const [trainingThreadFilter, setTrainingThreadFilter] = useState("");
+  const [trainingThreadsBusy, setTrainingThreadsBusy] = useState(false);
+  const [trainingThreadsError, setTrainingThreadsError] = useState<string | null>(null);
+  const [trainingMessagesBusy, setTrainingMessagesBusy] = useState(false);
+  const [trainingMessagesError, setTrainingMessagesError] = useState<string | null>(null);
   const [customerQuestionQueue, setCustomerQuestionQueue] = useState<CustomerQuestionQueueRow[]>([]);
 
   const [promptText, setPromptText] = useState("");
@@ -108,12 +132,39 @@ export default function AdminPage() {
     });
   }, [sessions, sessionFilter]);
 
+  const searchHasNoMatches = useMemo(
+    () =>
+      Boolean(sessionFilter.trim()) &&
+      sessions.length > 0 &&
+      filteredSessions.length === 0,
+    [sessionFilter, sessions.length, filteredSessions.length],
+  );
+
+  const filteredTrainingThreads = useMemo(() => {
+    const q = trainingThreadFilter.trim().toLowerCase();
+    if (!q) return trainingThreads;
+    return trainingThreads.filter(
+      (t) =>
+        t.title.toLowerCase().includes(q) ||
+        t.created_by.toLowerCase().includes(q),
+    );
+  }, [trainingThreads, trainingThreadFilter]);
+
   const loadSessions = useCallback(async () => {
     setApiError(null);
     setSessionLoadWarnings([]);
     try {
       const res = await fetch("/api/admin/conversations");
-      const data = await res.json();
+      const { parsed, data, parseError } = await readJsonBody<{
+        sessions?: SessionRow[];
+        warnings?: string[];
+        error?: string;
+      }>(res);
+      if (!parsed || !data) {
+        setApiError(parseError ?? "Invalid response from server");
+        setSessions([]);
+        return;
+      }
       if (!res.ok) {
         setApiError(data.error ?? `HTTP ${res.status}`);
         setSessions([]);
@@ -139,7 +190,14 @@ export default function AdminPage() {
       const res = await fetch(
         `/api/admin/conversations/${sessionId}/messages?channel=${encodeURIComponent(channel)}`,
       );
-      const data = await res.json();
+      const { parsed, data, parseError } = await readJsonBody<{ messages?: MessageRow[]; error?: string }>(
+        res,
+      );
+      if (!parsed || !data) {
+        setMessagesError(parseError ?? "Invalid response from server");
+        setMessages([]);
+        return;
+      }
       if (!res.ok) {
         setMessagesError(data.error ?? `HTTP ${res.status}`);
         setMessages([]);
@@ -157,8 +215,8 @@ export default function AdminPage() {
   const loadPromptKeys = useCallback(async () => {
     try {
       const res = await fetch("/api/admin/prompt-keys");
-      const data = await res.json();
-      if (res.ok && Array.isArray(data.keys) && data.keys.length) {
+      const { parsed, data } = await readJsonBody<{ keys?: string[] }>(res);
+      if (parsed && data && res.ok && Array.isArray(data.keys) && data.keys.length) {
         setPromptKeys(data.keys);
       }
     } catch {
@@ -172,7 +230,15 @@ export default function AdminPage() {
       const res = await fetch(
         `/api/admin/prompts/history?prompt_key=${encodeURIComponent(key)}`,
       );
-      const data = await res.json();
+      const { parsed, data, parseError } = await readJsonBody<{
+        versions?: PromptVersion[];
+        error?: string;
+      }>(res);
+      if (!parsed || !data) {
+        setPromptError(parseError ?? "Invalid response from server");
+        setPromptVersions([]);
+        return;
+      }
       if (!res.ok) {
         setPromptError(data.error ?? `HTTP ${res.status}`);
         setPromptVersions([]);
@@ -196,7 +262,15 @@ export default function AdminPage() {
     setQueueError(null);
     try {
       const res = await fetch("/api/admin/training-queue");
-      const data = await res.json();
+      const { parsed, data, parseError } = await readJsonBody<{
+        items?: CustomerQuestionQueueRow[];
+        error?: string;
+      }>(res);
+      if (!parsed || !data) {
+        setQueueError(parseError ?? "Invalid response from server");
+        setCustomerQuestionQueue([]);
+        return;
+      }
       if (!res.ok) {
         setQueueError(data.error ?? `HTTP ${res.status}`);
         setCustomerQuestionQueue([]);
@@ -209,11 +283,94 @@ export default function AdminPage() {
     }
   }, []);
 
+  const loadTrainingThreads = useCallback(async () => {
+    setTrainingThreadsError(null);
+    setTrainingThreadsBusy(true);
+    try {
+      const res = await fetch("/api/admin/training-threads");
+      const { parsed, data, parseError } = await readJsonBody<{
+        threads?: TrainingThreadRow[];
+        error?: string;
+      }>(res);
+      if (!parsed || !data) {
+        setTrainingThreadsError(parseError ?? "Invalid response from server");
+        setTrainingThreads([]);
+        return;
+      }
+      if (!res.ok) {
+        setTrainingThreadsError(data.error ?? `HTTP ${res.status}`);
+        setTrainingThreads([]);
+        return;
+      }
+      const list = data.threads ?? [];
+      setTrainingThreads(list);
+      setSelectedTrainingThreadId((prev) => {
+        if (prev && list.some((t) => t.id === prev)) return prev;
+        return list[0]?.id ?? null;
+      });
+    } catch (e) {
+      setTrainingThreadsError(e instanceof Error ? e.message : "Failed to load training sessions");
+      setTrainingThreads([]);
+    } finally {
+      setTrainingThreadsBusy(false);
+    }
+  }, []);
+
+  const loadTrainingMessages = useCallback(async (threadId: string) => {
+    setTrainingMessagesError(null);
+    setTrainingMessagesBusy(true);
+    try {
+      const res = await fetch(
+        `/api/admin/training-chat?thread_id=${encodeURIComponent(threadId)}`,
+      );
+      const { parsed, data, parseError } = await readJsonBody<{
+        messages?: Array<{ id: string; role: string; content: string }>;
+        error?: string;
+      }>(res);
+      if (!parsed || !data) {
+        setTrainingMessagesError(parseError ?? "Invalid response from server");
+        setTrainingLog([]);
+        return;
+      }
+      if (!res.ok) {
+        setTrainingMessagesError(data.error ?? `HTTP ${res.status}`);
+        setTrainingLog([]);
+        return;
+      }
+      const rows = data.messages ?? [];
+      setTrainingLog(
+        rows.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+        })),
+      );
+    } catch (e) {
+      setTrainingMessagesError(e instanceof Error ? e.message : "Failed to load messages");
+      setTrainingLog([]);
+    } finally {
+      setTrainingMessagesBusy(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadSessions();
     void loadPromptKeys();
     void loadCustomerQuestionQueue();
   }, [loadCustomerQuestionQueue, loadSessions, loadPromptKeys]);
+
+  useEffect(() => {
+    if (workspace !== "training") return;
+    void loadTrainingThreads();
+  }, [workspace, loadTrainingThreads]);
+
+  useEffect(() => {
+    if (!selectedTrainingThreadId) {
+      setTrainingLog([]);
+      return;
+    }
+    void loadTrainingMessages(selectedTrainingThreadId);
+  }, [selectedTrainingThreadId, loadTrainingMessages]);
 
   useEffect(() => {
     void loadPromptHistory(selectedPromptKey);
@@ -249,14 +406,19 @@ export default function AdminPage() {
             .split(",")
             .map((t) => t.trim())
             .filter(Boolean),
+          prior_assistant_summary: priorAssistantSummary.trim() || null,
         }),
       });
-      const data = await res.json();
+      const { parsed, data } = await readJsonBody<{ error?: string }>(res);
+      if (!parsed || !data) {
+        setNoteStatus(`Save failed (HTTP ${res.status})`);
+        return;
+      }
       if (!res.ok) {
         setNoteStatus(data.error ?? "Failed to save note");
         return;
       }
-      setNoteStatus("Note saved — feeds learning snippets for the customer AI.");
+      setNoteStatus("Note saved — published to learning snippets for the customer AI.");
       setSymptoms("");
       setRootCause("");
       setFixSteps("");
@@ -264,13 +426,14 @@ export default function AdminPage() {
       setMachineModel("");
       setMachineSerial("");
       setTags("");
+      setPriorAssistantSummary("");
     } finally {
       setNoteBusy(false);
     }
   }
 
   async function sendTrainingMessage() {
-    if (!trainingInput.trim()) return;
+    if (!trainingInput.trim() || !selectedTrainingThreadId) return;
     const text = trainingInput.trim();
     setTrainingInput("");
     setTrainingLog((prev) => [...prev, { role: "user", content: text }]);
@@ -279,16 +442,59 @@ export default function AdminPage() {
       const res = await fetch("/api/admin/training-chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: text, created_by: createdBy }),
+        body: JSON.stringify({
+          message: text,
+          created_by: createdBy,
+          thread_id: selectedTrainingThreadId,
+        }),
       });
-      const data = await res.json();
-      const assistant = res.ok ? data.reply : `Error: ${data.error ?? "failed"}`;
+      const { parsed, data } = await readJsonBody<{ reply?: string; error?: string; queued?: number }>(res);
+      const assistant =
+        parsed && data && res.ok
+          ? (data.reply ?? "")
+          : `Error: ${parsed && data?.error ? data.error : `HTTP ${res.status}`}`;
       setTrainingLog((prev) => [...prev, { role: "assistant", content: assistant }]);
-      if (res.ok && typeof data.queued === "number" && data.queued > 0) {
+      if (parsed && data && res.ok && typeof data.queued === "number" && data.queued > 0) {
         await loadCustomerQuestionQueue();
+      }
+      if (parsed && data && res.ok) {
+        void loadTrainingThreads();
       }
     } finally {
       setTrainingBusy(false);
+    }
+  }
+
+  async function createTrainingThread() {
+    const title = newThreadTitle.trim();
+    if (!title) return;
+    setTrainingThreadsBusy(true);
+    setTrainingThreadsError(null);
+    try {
+      const res = await fetch("/api/admin/training-threads", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title, created_by: createdBy }),
+      });
+      const { parsed, data } = await readJsonBody<{
+        thread?: TrainingThreadRow;
+        error?: string;
+      }>(res);
+      if (!parsed || !data || !res.ok) {
+        setTrainingThreadsError(data?.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      const t = data.thread;
+      if (t) {
+        setTrainingThreads((prev) => [t, ...prev.filter((x) => x.id !== t.id)]);
+        setSelectedTrainingThreadId(t.id);
+        setTrainingLog([]);
+        setNewThreadTitle("");
+      }
+    } catch (e) {
+      setTrainingThreadsError(e instanceof Error ? e.message : "Failed to create session");
+    } finally {
+      setTrainingThreadsBusy(false);
     }
   }
 
@@ -315,9 +521,9 @@ export default function AdminPage() {
           created_by: createdBy,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        alert(data.error ?? "Failed to save prompt version");
+      const { parsed, data } = await readJsonBody<{ error?: string }>(res);
+      if (!parsed || !data || !res.ok) {
+        alert(data?.error ?? `Failed to save prompt version (HTTP ${res.status})`);
         return;
       }
       setChangeSummary("");
@@ -334,9 +540,9 @@ export default function AdminPage() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ id }),
     });
-    const data = await res.json();
-    if (!res.ok) {
-      alert(data.error ?? "Rollback failed");
+    const { parsed, data } = await readJsonBody<{ error?: string }>(res);
+    if (!parsed || !data || !res.ok) {
+      alert(data?.error ?? `Rollback failed (HTTP ${res.status})`);
       return;
     }
     await loadPromptHistory(selectedPromptKey);
@@ -355,7 +561,10 @@ export default function AdminPage() {
     window.location.href = "/login";
   }
 
-  const hasDataError = apiError || messagesError || promptError || queueError;
+  const conversationLoadError = apiError || messagesError;
+  const promptsLoadError = promptError;
+  const trainingWorkspaceLoadError =
+    trainingThreadsError || trainingMessagesError || queueError;
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-6">
@@ -395,7 +604,11 @@ export default function AdminPage() {
             </div>
             <button
               type="button"
-              onClick={() => void loadSessions()}
+              onClick={() => {
+                void loadSessions();
+                void loadTrainingThreads();
+                void loadCustomerQuestionQueue();
+              }}
               className="rounded-md border border-slate-600 px-3 py-2 text-sm text-slate-300"
             >
               Refresh data
@@ -423,20 +636,46 @@ export default function AdminPage() {
               </div>
             ) : null}
 
-            {hasDataError ? (
+            {workspace === "conversations" && conversationLoadError ? (
               <div className="rounded-xl border border-amber-700/60 bg-amber-950/40 p-4 text-sm text-amber-50">
-                <p className="font-semibold text-amber-200">Something failed to load (often missing env or migration)</p>
+                <p className="font-semibold text-amber-200">Customer chats could not load</p>
                 <ul className="mt-2 list-inside list-disc space-y-1 text-amber-100/90">
-                  {apiError ? <li>Customer sessions: {apiError}</li> : null}
+                  {apiError ? <li>Sessions: {apiError}</li> : null}
                   {messagesError ? <li>Transcript: {messagesError}</li> : null}
-                  {promptError ? <li>Prompts: {promptError}</li> : null}
-                  {queueError ? <li>Queue: {queueError}</li> : null}
                 </ul>
                 <p className="mt-3 text-xs text-amber-200/80">
-                  On Vercel, set <code className="rounded bg-black/30 px-1">SUPABASE_URL</code> and{" "}
-                  <code className="rounded bg-black/30 px-1">SUPABASE_SERVICE_ROLE_KEY</code>. Run Supabase
-                  migrations through <code className="rounded bg-black/30 px-1">009_seed_default_prompt_version.sql</code>{" "}
-                  so prompts are not empty.
+                  In Vercel → Environment Variables (Production), set{" "}
+                  <code className="rounded bg-black/30 px-1">SUPABASE_URL</code> and{" "}
+                  <code className="rounded bg-black/30 px-1">SUPABASE_SERVICE_ROLE_KEY</code> for this project,
+                  then redeploy. Names must match exactly (not only NEXT_PUBLIC_*).
+                </p>
+              </div>
+            ) : null}
+
+            {workspace === "prompts" && promptsLoadError ? (
+              <div className="rounded-xl border border-amber-700/60 bg-amber-950/40 p-4 text-sm text-amber-50">
+                <p className="font-semibold text-amber-200">Prompts could not load</p>
+                <p className="mt-2 text-amber-100/90">{promptsLoadError}</p>
+                <p className="mt-3 text-xs text-amber-200/80">
+                  Same Supabase env as above; ensure migration 009 ran so{" "}
+                  <code className="rounded bg-black/30 px-1">prompt_versions</code> has rows.
+                </p>
+              </div>
+            ) : null}
+
+            {workspace === "training" && trainingWorkspaceLoadError ? (
+              <div className="rounded-xl border border-amber-700/60 bg-amber-950/40 p-4 text-sm text-amber-50">
+                <p className="font-semibold text-amber-200">Team training workspace could not load completely</p>
+                <ul className="mt-2 list-inside list-disc space-y-1 text-amber-100/90">
+                  {trainingThreadsError ? <li>Sessions list: {trainingThreadsError}</li> : null}
+                  {trainingMessagesError ? <li>Chat history: {trainingMessagesError}</li> : null}
+                  {queueError ? <li>Ticket queue: {queueError}</li> : null}
+                </ul>
+                <p className="mt-3 text-xs text-amber-200/80">
+                  Ensure Supabase env vars are set for this admin project. Training chat needs{" "}
+                  <code className="rounded bg-black/30 px-1">training_threads</code> +{" "}
+                  <code className="rounded bg-black/30 px-1">training_chat_messages.thread_id</code> (migration 011).
+                  Queue needs <code className="rounded bg-black/30 px-1">admin_customer_question_queue</code> (008).
                 </p>
               </div>
             ) : null}
@@ -469,22 +708,35 @@ export default function AdminPage() {
                 <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
                   <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">
                     <div className="mb-3 flex flex-col gap-2">
-                      <h2 className="font-semibold">All chat sessions</h2>
+                      <div className="flex flex-wrap items-baseline justify-between gap-2">
+                        <h2 className="font-semibold">All conversations</h2>
+                        {!apiError ? (
+                          <span className="text-xs text-slate-500">
+                            {sessions.length} thread{sessions.length === 1 ? "" : "s"} (newest first)
+                          </span>
+                        ) : null}
+                      </div>
                       <p className="text-xs text-slate-500">
-                        Contact chats (no login) and signed-in customer chats both appear here—same app, two
-                        storage paths in Supabase. Pick a row to load the transcript.
+                        Every contact chat and signed-in account thread loads here automatically—no search
+                        required. Pick a row to open the transcript.
                       </p>
                       <input
                         value={sessionFilter}
                         onChange={(e) => setSessionFilter(e.target.value)}
-                        placeholder="Filter by name, email, phone…"
+                        placeholder="Optional: narrow list by name, email, or phone"
                         className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
                       />
                     </div>
                     <div className="max-h-[min(480px,55vh)] overflow-auto space-y-2">
-                      {!apiError && filteredSessions.length === 0 ? (
+                      {!apiError && searchHasNoMatches ? (
+                        <p className="text-sm text-amber-200/90">
+                          No conversations match that search. Clear the box to see all {sessions.length} again.
+                        </p>
+                      ) : null}
+                      {!apiError && !searchHasNoMatches && sessions.length === 0 ? (
                         <p className="text-sm text-slate-500">
-                          No sessions yet. When customers use the app, threads appear here automatically.
+                          No sessions yet. When anyone uses the customer app, their thread appears here
+                          automatically.
                         </p>
                       ) : null}
                       {filteredSessions.map((s) => (
@@ -571,8 +823,8 @@ export default function AdminPage() {
                   <h2 className="font-semibold">Technician notes → AI training</h2>
                   <p className="text-sm text-slate-400">
                     Your team built these machines — record what actually failed and how you fixed it.
-                    Saved notes become learning snippets the customer-facing AI can use (after migration
-                    006 + 007).
+                    Each save publishes a learning snippet (field-verified patterns the customer AI can
+                    suggest when symptoms match). Migrations 006–007 + 012.
                   </p>
                   {activeSession?.channel === "auth" ? (
                     <p className="rounded-md border border-amber-800/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-100/90">
@@ -592,6 +844,13 @@ export default function AdminPage() {
                     onChange={(e) => setSymptoms(e.target.value)}
                     className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
                     placeholder="Symptoms / what the customer or chat showed"
+                    rows={2}
+                  />
+                  <textarea
+                    value={priorAssistantSummary}
+                    onChange={(e) => setPriorAssistantSummary(e.target.value)}
+                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                    placeholder="Optional: what the customer AI already tried in chat (so we learn gap vs fix)"
                     rows={2}
                   />
                   <textarea
@@ -748,22 +1007,104 @@ export default function AdminPage() {
 
             {workspace === "training" ? (
               <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-                <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                  <div className="space-y-2 min-w-0">
+                <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
+                  <div className="space-y-3 min-w-0 xl:col-span-3">
+                    <div>
+                      <h2 className="font-semibold">Training sessions</h2>
+                      <p className="text-xs text-slate-500">
+                        One session per field report, model deep-dive, or topic. Newest activity sorts to the
+                        top.
+                      </p>
+                    </div>
+                    <input
+                      value={createdBy}
+                      onChange={(e) => setCreatedBy(e.target.value)}
+                      className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                      placeholder="Your name (for new sessions & messages)"
+                    />
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                      <input
+                        value={newThreadTitle}
+                        onChange={(e) => setNewThreadTitle(e.target.value)}
+                        className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                        placeholder="New session title (e.g. Matt Phillips — bad connector)"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void createTrainingThread();
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void createTrainingThread()}
+                        disabled={trainingThreadsBusy || !newThreadTitle.trim()}
+                        className="rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 disabled:opacity-50"
+                      >
+                        {trainingThreadsBusy ? "…" : "New session"}
+                      </button>
+                    </div>
+                    <input
+                      value={trainingThreadFilter}
+                      onChange={(e) => setTrainingThreadFilter(e.target.value)}
+                      className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                      placeholder="Filter by title or author"
+                    />
+                    <div className="max-h-[min(360px,45vh)] overflow-auto space-y-2">
+                      {trainingThreadsBusy && trainingThreads.length === 0 ? (
+                        <p className="text-sm text-slate-500">Loading sessions…</p>
+                      ) : null}
+                      {!trainingThreadsBusy && trainingThreads.length === 0 ? (
+                        <p className="text-sm text-slate-500">
+                          No sessions yet. Add a title above (migration 011 must be applied).
+                        </p>
+                      ) : null}
+                      {filteredTrainingThreads.map((t) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => setSelectedTrainingThreadId(t.id)}
+                          className={`w-full rounded-md border p-3 text-left ${
+                            selectedTrainingThreadId === t.id
+                              ? "border-red-500 bg-slate-800"
+                              : "border-slate-800 bg-slate-950"
+                          }`}
+                        >
+                          <p className="text-sm font-medium leading-snug">{t.title}</p>
+                          <p className="text-[11px] text-slate-500">
+                            {t.created_by} · updated {new Date(t.updated_at).toLocaleString()}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 min-w-0 xl:col-span-5">
                     <h2 className="font-semibold">Internal training assistant</h2>
                     <p className="text-sm text-slate-400">
-                      For Stealth staff only. It assumes you know the equipment; you do not need to be a
-                      developer. It answers in full and can add items to the ticket queue when a customer
-                      question needs an official answer.
+                      For Stealth staff only. Document field fixes, customer names (the AI will confirm
+                      spelling), and machine details — stored per session. It can queue official follow-ups on
+                      the right.
                     </p>
                     <div className="max-h-[min(420px,50vh)] overflow-auto rounded-md border border-slate-800 bg-slate-950 p-2 space-y-2">
-                      {trainingLog.length === 0 ? (
+                      {trainingMessagesBusy ? (
+                        <p className="text-sm text-slate-500 px-2">Loading messages…</p>
+                      ) : null}
+                      {!trainingMessagesBusy && !selectedTrainingThreadId ? (
                         <p className="text-sm text-slate-500 px-2">
-                          Start a thread about alarms, models, or what the public bot gets wrong.
+                          Create or select a training session on the left.
+                        </p>
+                      ) : null}
+                      {!trainingMessagesBusy &&
+                      selectedTrainingThreadId &&
+                      trainingLog.length === 0 ? (
+                        <p className="text-sm text-slate-500 px-2">
+                          No messages in this session yet. Describe the job, customer, and fix — the assistant
+                          will help structure it for the team.
                         </p>
                       ) : null}
                       {trainingLog.map((m, i) => (
-                        <div key={i} className="rounded-md border border-slate-800 p-2">
+                        <div
+                          key={m.id ?? `${m.role}-${i}-${m.content.slice(0, 24)}`}
+                          className="rounded-md border border-slate-800 p-2"
+                        >
                           <p className="text-xs uppercase text-slate-400">{m.role}</p>
                           <p className="whitespace-pre-wrap text-sm leading-relaxed">{m.content}</p>
                         </div>
@@ -774,25 +1115,25 @@ export default function AdminPage() {
                       onChange={(e) => setTrainingInput(e.target.value)}
                       rows={4}
                       className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-                      placeholder="Ask anything about machines, customer patterns, or how the AI should behave…"
+                      placeholder="Field report, model question, or how the public bot should behave…"
+                      disabled={!selectedTrainingThreadId}
                     />
                     <button
                       type="button"
-                      onClick={sendTrainingMessage}
-                      disabled={trainingBusy}
+                      onClick={() => void sendTrainingMessage()}
+                      disabled={trainingBusy || !selectedTrainingThreadId || !trainingInput.trim()}
                       className="rounded-md border border-slate-600 bg-slate-800 px-4 py-2 text-sm disabled:opacity-60"
                     >
                       {trainingBusy ? "Thinking…" : "Send"}
                     </button>
                   </div>
 
-                  <div className="space-y-2 min-w-0">
+                  <div className="space-y-2 min-w-0 xl:col-span-4">
                     <h2 className="font-semibold text-amber-100/90">Ticket queue (hard questions)</h2>
                     <p className="text-sm text-slate-400">
                       When the training AI spots a gap, it files rows here (like internal tickets). Resolve
                       when the answer is in the manual, KB, or prompt.
                     </p>
-                    {queueError ? <p className="text-sm text-red-400">{queueError}</p> : null}
                     <div className="max-h-[min(420px,50vh)] overflow-auto rounded-md border border-amber-900/40 bg-amber-950/20 p-2 space-y-2">
                       {customerQuestionQueue.filter((q) => q.status === "open").length === 0 ? (
                         <p className="text-sm text-slate-500 px-2">No open items.</p>

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { getSupabaseAdminClient } from "@/lib/supabase-server";
+import { getSupabaseAdminClientSafe } from "@/lib/supabase-server";
 
 /** Unified row for contact (anon) + signed-in auth threads — matches Flutter `ChatRepository` storage. */
 type UnifiedSession = {
@@ -19,10 +19,20 @@ type UnifiedSession = {
   };
 };
 
-export async function GET() {
-  const supabase = getSupabaseAdminClient();
+export const dynamic = "force-dynamic";
 
-  const [supportRes, authSessionsRes] = await Promise.all([
+export async function GET() {
+  try {
+    const init = getSupabaseAdminClientSafe();
+    if (!init.ok) {
+      return NextResponse.json(
+        { error: init.error, sessions: [], partial: false, warnings: [] },
+        { status: 503 },
+      );
+    }
+    const supabase = init.client;
+
+    const [supportRes, authSessionsRes] = await Promise.all([
     supabase
       .from("support_chat_sessions")
       .select("id, contact_id, created_at, updated_at, chat_contacts(full_name, email, phone)")
@@ -115,12 +125,19 @@ export async function GET() {
     );
   }
 
-  return NextResponse.json({
-    sessions,
-    partial: Boolean(supportError || authError),
-    warnings: [supportError && `support_chat_sessions: ${supportError}`, authError && `chat_sessions: ${authError}`].filter(
-      Boolean,
-    ) as string[],
-  });
+    return NextResponse.json({
+      sessions,
+      partial: Boolean(supportError || authError),
+      warnings: [supportError && `support_chat_sessions: ${supportError}`, authError && `chat_sessions: ${authError}`].filter(
+        Boolean,
+      ) as string[],
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "Unknown server error";
+    return NextResponse.json(
+      { error: message, sessions: [], partial: false, warnings: [] },
+      { status: 500 },
+    );
+  }
 }
 

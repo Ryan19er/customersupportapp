@@ -60,6 +60,60 @@ class ChatRepository {
     return row['id'] as String;
   }
 
+  /// Technician-confirmed fixes from `learning_snippets` (see admin tech notes).
+  /// Scoped by machine model when the profile lists one; includes generic snippets too.
+  Future<String> fetchLearningSnippetsContext(CustomerProfile profile) async {
+    final rows = await _client
+        .from('learning_snippets')
+        .select('snippet_text, machine_model')
+        .order('created_at', ascending: false)
+        .limit(80);
+
+    final list = (rows as List)
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+
+    final model = profile.machineModel?.trim();
+    final modelLower = model?.toLowerCase() ?? '';
+
+    bool matchesModel(String? mm) {
+      final m = mm?.trim();
+      if (m == null || m.isEmpty) return true;
+      if (modelLower.isEmpty) return true;
+      final ml = m.toLowerCase();
+      return ml == modelLower ||
+          modelLower.contains(ml) ||
+          ml.contains(modelLower);
+    }
+
+    final filtered = <Map<String, dynamic>>[];
+    for (final r in list) {
+      if (matchesModel(r['machine_model'] as String?)) {
+        filtered.add(r);
+      }
+      if (filtered.length >= 28) break;
+    }
+
+    if (filtered.isEmpty) return '';
+
+    final buf = StringBuffer();
+    buf.writeln(
+      '### Field-verified repair patterns (from Stealth technicians after real visits)',
+    );
+    buf.writeln(
+      'When the customer symptom matches, suggest these checks in addition to normal diagnostics. '
+      'Do not treat this as a guarantee—verify safety and site conditions.',
+    );
+    for (final r in filtered) {
+      final text = (r['snippet_text'] as String?)?.trim() ?? '';
+      if (text.isEmpty) continue;
+      final clipped =
+          text.length > 1200 ? '${text.substring(0, 1200)}…' : text;
+      buf.writeln('- $clipped');
+    }
+    return buf.toString();
+  }
+
   Future<CustomerProfile?> fetchProfile() async {
     if (_contactMode) {
       final row = await _client

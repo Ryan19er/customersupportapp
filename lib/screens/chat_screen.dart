@@ -121,10 +121,20 @@ class _ChatScreenState extends State<ChatScreen> {
                 (m) => ChatTurn(role: m.role, text: m.content),
               )
               .toList();
+          String learning = "";
+          try {
+            learning = await widget.repository
+                .fetchLearningSnippetsContext(widget.profile);
+          } catch (_) {
+            /* optional */
+          }
+          final ctx = widget.profile.anthropicContextBlock;
+          final extra =
+              learning.trim().isEmpty ? ctx : '$ctx\n\n${learning.trim()}';
           return _claude.complete(
             history: history,
             nextUserMessage: userMsg,
-            additionalSystemContext: widget.profile.anthropicContextBlock,
+            additionalSystemContext: extra,
           );
         },
       );

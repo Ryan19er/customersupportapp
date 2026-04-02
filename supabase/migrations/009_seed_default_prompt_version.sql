@@ -5,11 +5,14 @@ insert into public.prompt_versions (prompt_key, version, markdown_content, chang
 select
   'support-system',
   1,
-  E'## Stealth customer AI — default system prompt (seed)\n\n'
-  E'This row was created by migration 009 so the admin panel has something to edit.\n'
-  E'Replace this with the full prompt from the Flutter app (`stealth_system_prompt.dart`) or your canonical KB.\n\n'
-  E'### Role\n'
-  E'You are the official Stealth Machine Tools customer-support assistant. Help with equipment, troubleshooting, safety, and how to reach Stealth.\n',
+  $seed$## Stealth customer AI — default system prompt (seed)
+
+This row was created by migration 009 so the admin panel has something to edit.
+Replace this with the full prompt from the Flutter app (`stealth_system_prompt.dart`) or your canonical KB.
+
+### Role
+You are the official Stealth Machine Tools customer-support assistant. Help with equipment, troubleshooting, safety, and how to reach Stealth.
+$seed$,
   'Seed v1 from migration 009',
   'system',
   true

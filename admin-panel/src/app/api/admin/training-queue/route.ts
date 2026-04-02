@@ -1,20 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { getSupabaseAdminClient } from "@/lib/supabase-server";
+import { getSupabaseAdminClientSafe } from "@/lib/supabase-server";
+
+export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const supabase = getSupabaseAdminClient();
-  const { data, error } = await supabase
-    .from("admin_customer_question_queue")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(200);
+  try {
+    const init = getSupabaseAdminClientSafe();
+    if (!init.ok) {
+      return NextResponse.json({ error: init.error, items: [] }, { status: 503 });
+    }
+    const supabase = init.client;
+    const { data, error } = await supabase
+      .from("admin_customer_question_queue")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(200);
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      return NextResponse.json({ error: error.message, items: [] }, { status: 500 });
+    }
+    return NextResponse.json({ items: data ?? [] });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "Unknown error";
+    return NextResponse.json({ error: message, items: [] }, { status: 500 });
   }
-  return NextResponse.json({ items: data ?? [] });
 }
 
 const resolveSchema = z.object({
@@ -29,7 +40,11 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }
 
-  const supabase = getSupabaseAdminClient();
+  const init = getSupabaseAdminClientSafe();
+  if (!init.ok) {
+    return NextResponse.json({ error: init.error }, { status: 503 });
+  }
+  const supabase = init.client;
   const { data, error } = await supabase
     .from("admin_customer_question_queue")
     .update({

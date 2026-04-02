@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { getSupabaseAdminClient } from "@/lib/supabase-server";
+import { getSupabaseAdminClientSafe } from "@/lib/supabase-server";
 
 type Params = Promise<{ sessionId: string }>;
 
 export async function GET(req: NextRequest, { params }: { params: Params }) {
   const { sessionId } = await params;
   const channel = req.nextUrl.searchParams.get("channel");
-  const supabase = getSupabaseAdminClient();
+  const init = getSupabaseAdminClientSafe();
+  if (!init.ok) {
+    return NextResponse.json({ error: init.error, messages: [] }, { status: 503 });
+  }
+  const supabase = init.client;
 
   const selectCols = "id, role, content, created_at, session_id";
 

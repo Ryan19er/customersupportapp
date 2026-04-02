@@ -1,13 +1,19 @@
 import { NextResponse } from "next/server";
 
-import { getSupabaseAdminClient } from "@/lib/supabase-server";
+import { getSupabaseAdminClientSafe } from "@/lib/supabase-server";
 
 /** Default prompt “files” (keys) used across the app. DB may add more over time. */
 const DEFAULT_KEYS = ["support-system", "stealth-onboarding"];
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   try {
-    const supabase = getSupabaseAdminClient();
+    const init = getSupabaseAdminClientSafe();
+    if (!init.ok) {
+      return NextResponse.json({ error: init.error, keys: DEFAULT_KEYS }, { status: 503 });
+    }
+    const supabase = init.client;
     const { data, error } = await supabase.from("prompt_versions").select("prompt_key");
 
     if (error) {

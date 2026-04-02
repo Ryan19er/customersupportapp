@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { getSupabaseAdminClient } from "@/lib/supabase-server";
+import { getSupabaseAdminClientSafe } from "@/lib/supabase-server";
 
 const schema = z.object({
   prompt_key: z.string().min(1),
@@ -17,7 +17,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }
 
-  const supabase = getSupabaseAdminClient();
+  const init = getSupabaseAdminClientSafe();
+  if (!init.ok) {
+    return NextResponse.json({ error: init.error }, { status: 503 });
+  }
+  const supabase = init.client;
   const input = parsed.data;
 
   const { data: maxRows, error: maxErr } = await supabase

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { getSupabaseAdminClient } from "@/lib/supabase-server";
+import { buildLearningSnippetText } from "@/lib/build-learning-snippet-text";
+import { getSupabaseAdminClientSafe } from "@/lib/supabase-server";
 
 const noteSchema = z.object({
   contact_id: z.string().uuid(),
@@ -15,10 +16,15 @@ const noteSchema = z.object({
   machine_serial: z.string().optional().nullable(),
   created_by: z.string().min(1),
   tags: z.array(z.string()).default([]),
+  prior_assistant_summary: z.string().optional().nullable(),
 });
 
 export async function GET(req: NextRequest) {
-  const supabase = getSupabaseAdminClient();
+  const init = getSupabaseAdminClientSafe();
+  if (!init.ok) {
+    return NextResponse.json({ error: init.error, notes: [] }, { status: 503 });
+  }
+  const supabase = init.client;
   const q = req.nextUrl.searchParams.get("q")?.trim();
 
   let query = supabase
@@ -46,7 +52,11 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid note payload" }, { status: 400 });
   }
-  const supabase = getSupabaseAdminClient();
+  const init = getSupabaseAdminClientSafe();
+  if (!init.ok) {
+    return NextResponse.json({ error: init.error }, { status: 503 });
+  }
+  const supabase = init.client;
   const payload = parsed.data;
 
   const { data, error } = await supabase
@@ -63,6 +73,7 @@ export async function POST(req: NextRequest) {
       machine_serial: payload.machine_serial,
       created_by: payload.created_by,
       tags: payload.tags,
+      prior_assistant_summary: payload.prior_assistant_summary?.trim() || null,
     })
     .select("*")
     .single();
@@ -70,6 +81,31 @@ export async function POST(req: NextRequest) {
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  const snippetText = buildLearningSnippetText({
+    symptoms: data.symptoms,
+    root_cause: data.root_cause,
+    fix_steps: data.fix_steps,
+    parts_used: data.parts_used,
+    prior_assistant_summary: data.prior_assistant_summary,
+    tags: data.tags ?? [],
+  });
+
+  const upsertSnip = await supabase.from("learning_snippets").upsert(
+    {
+      tech_note_id: data.id,
+      snippet_text: snippetText,
+      machine_model: data.machine_model,
+      machine_serial: data.machine_serial,
+      issue_tags: data.tags ?? [],
+      confidence: 0.5,
+    },
+    { onConflict: "tech_note_id" },
+  );
+  if (upsertSnip.error) {
+    console.error("learning_snippets upsert:", upsertSnip.error.message);
+  }
+
   return NextResponse.json({ note: data });
 }
 
