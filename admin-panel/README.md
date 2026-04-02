@@ -33,10 +33,55 @@ Then `/` is the Flutter app and `/admin` is this panel.
 
 ## Vercel (single deployment)
 
-1. In the Vercel project, set **Root Directory** to this folder: `stealth_support_app/admin-panel` (adjust if your repo layout differs — it must point at the folder that contains `package.json` for this app).
-2. Add the same env vars as `.env.example` in **Project → Settings → Environment Variables** (including `SUPABASE_SERVICE_ROLE_KEY`).
-3. Deploy. The build runs `npm run build:vercel`, which installs Flutter on Vercel when needed, builds the Flutter web bundle, copies it into `public/`, then runs `next build`.
-4. Result: **`/`** = customer Flutter app, **`/admin`** = technician admin (login at **`/login`**).
+**Stealth Development** team on Vercel, project name **`customersupportapp`**. In the CLI, the team appears as **Team Stealth** with slug **`team-stealth-fed896d2`**.
+
+Deploy from the **Flutter app root** (`stealth_support_app`, one level above `admin-panel`) so the build can see `pubspec.yaml` and run `flutter build web`. The Vercel CLI is a dev dependency in `admin-panel`; npm scripts run `vercel` from the parent directory.
+
+### One-time: login and link
+
+```bash
+cd stealth_support_app   # repo root for this app (contains pubspec.yaml + admin-panel/)
+npm install --prefix admin-panel
+npx vercel login
+npx vercel link --yes --scope team-stealth-fed896d2 --project customersupportapp
+```
+
+That attaches this folder to **Stealth Development → customersupportapp**. To link interactively instead, run `npx vercel link` from `stealth_support_app` and pick that team and project.
+
+### Environment variables
+
+Either in the [Vercel dashboard](https://vercel.com) (Project → Settings → Environment Variables) or with the CLI:
+
+```bash
+npx vercel env add SUPABASE_URL
+# repeat for SUPABASE_SERVICE_ROLE_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, etc.
+```
+
+Pull preview env into a local file (optional):
+
+```bash
+npm run vercel:env
+```
+
+Match the keys in `.env.example`.
+
+### Deploy (CLI)
+
+```bash
+npm run vercel:prod
+```
+
+Or `npm run vercel:deploy` for a preview deployment.
+
+### GitHub → auto deploy (recommended)
+
+In the Vercel project **customersupportapp**, connect GitHub **`Ryan19er/customersupportapp`**, branch **`main`**, and set **Root Directory** to **`admin-panel`** (relative to the repo root where `pubspec.yaml` lives). Every push to `main` runs `npm run build:vercel` in that folder. See the main repo `README.md` for the checklist.
+
+### URLs after deploy
+
+- **`/`** — customer Flutter app  
+- **`/login`** — admin login  
+- **`/admin`** — technician admin  
 
 First production deploys can take several minutes while Flutter is downloaded and the web bundle is built.
 

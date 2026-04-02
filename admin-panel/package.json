@@ -8,7 +8,12 @@
     "build:vercel": "bash scripts/sync-flutter-public.sh && next build",
     "sync:public": "bash scripts/sync-flutter-public.sh",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "vercel": "cd .. && vercel",
+    "vercel:link": "cd .. && vercel link",
+    "vercel:deploy": "cd .. && vercel deploy",
+    "vercel:prod": "cd .. && vercel --prod",
+    "vercel:env": "cd .. && vercel env pull admin-panel/.env.local"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.101.1",
@@ -25,6 +30,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.2",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vercel": "^50.38.2"
   }
 }

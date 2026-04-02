@@ -31,3 +31,4 @@ windows/flutter/ephemeral/
 
 # Local secrets
 assets/.env
+.vercel

@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
-# Copies ../build/web (Flutter) into public/ so / serves the customer app on the same deploy.
-# On Vercel/CI without Flutter on PATH, installs a stable Flutter SDK under /tmp (cached path).
+# Copies Flutter build/web into admin-panel/public/ so / serves the customer app.
+# Flutter root is found by walking up from admin-panel until pubspec.yaml is found.
+# On Vercel/CI without Flutter on PATH, installs a stable Flutter SDK under /tmp.
 set -euo pipefail
 
 ADMIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_DIR="$(cd "$ADMIN_DIR/.." && pwd)"
+
+# Resolve directory that contains pubspec.yaml (Flutter app root)
+APP_DIR="$ADMIN_DIR"
+while [[ "$APP_DIR" != "/" ]]; do
+  if [[ -f "${APP_DIR}/pubspec.yaml" ]]; then
+    break
+  fi
+  APP_DIR="$(dirname "$APP_DIR")"
+done
+if [[ ! -f "${APP_DIR}/pubspec.yaml" ]]; then
+  echo "Error: Could not find pubspec.yaml above ${ADMIN_DIR}." >&2
+  echo "Deploy from the repo folder that contains both the Flutter app and admin-panel/ (see README)." >&2
+  exit 1
+fi
 
 install_flutter_ci() {
   # Vercel sets VERCEL=1 and/or VERCEL_ENV; GitHub Actions sets CI=true

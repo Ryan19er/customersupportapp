@@ -39,3 +39,14 @@ Bulletin-scope app: **AI-led onboarding** (no login-first gate), **Claude** chat
 ## Web / API keys
 
 Direct **Anthropic** calls from **web** may hit **CORS**; use an Edge Function or backend for production web.
+
+## Vercel (GitHub → auto deploy)
+
+One Vercel project (**Stealth Development → `customersupportapp`**) hosts both the Flutter web app at **`/`** and the Next.js admin at **`/admin`** (login at **`/login`**).
+
+1. In [Vercel](https://vercel.com) → project **customersupportapp** → **Settings → Git**: connect **`Ryan19er/customersupportapp`**, production branch **`main`**.
+2. **Settings → General → Root Directory**: set to **`admin-panel`** (required so Vercel detects Next.js; the full repo is still cloned, so the build can run `flutter build web` one level up).
+3. **Settings → Environment Variables**: add the same keys as `admin-panel/.env.example` (especially `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`).
+4. Push to **`main`** — Vercel runs `npm run build:vercel` in `admin-panel` (Flutter web bundle + Next build).
+
+Details: `admin-panel/README.md`.
