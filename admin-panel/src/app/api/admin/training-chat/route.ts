@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getSupabaseAdminClient } from "@/lib/supabase-server";
+import { extractQueueItemsFromAssistantText } from "@/lib/training-queue-parse";
 import { trainingSystemPrompt } from "@/lib/training-system-prompt";
 
 const schema = z.object({
@@ -32,7 +33,7 @@ export async function POST(req: NextRequest) {
     .from("training_chat_messages")
     .select("role, content")
     .order("created_at", { ascending: true })
-    .limit(24);
+    .limit(48);
 
   const messages = (historyRows ?? []).map((r) => ({
     role: r.role,
@@ -50,6 +51,7 @@ export async function POST(req: NextRequest) {
     },
     body: JSON.stringify({
       model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6",
+      max_tokens: 8192,
       system: trainingSystemPrompt,
       messages,
     }),
@@ -63,16 +65,35 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const assistant = String(proxyJson.text);
+  const rawAssistant = String(proxyJson.text);
+  const { displayText, items: queueItems } = extractQueueItemsFromAssistantText(rawAssistant);
+
   const saveAssistant = await supabase.from("training_chat_messages").insert({
     role: "assistant",
-    content: assistant,
+    content: displayText,
     created_by: input.created_by,
   });
   if (saveAssistant.error) {
     return NextResponse.json({ error: saveAssistant.error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ reply: assistant });
+  let queued = 0;
+  if (queueItems.length > 0) {
+    const rows = queueItems.map((q) => ({
+      title: q.title,
+      detail: q.detail || null,
+      source: "training_chat",
+      status: "open" as const,
+      created_by: input.created_by,
+    }));
+    const ins = await supabase.from("admin_customer_question_queue").insert(rows);
+    if (ins.error) {
+      console.error("admin_customer_question_queue insert:", ins.error.message);
+    } else {
+      queued = queueItems.length;
+    }
+  }
+
+  return NextResponse.json({ reply: displayText, queued });
 }
 

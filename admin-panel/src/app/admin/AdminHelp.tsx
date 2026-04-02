@@ -80,13 +80,18 @@ export function AdminHelp() {
       </section>
 
       <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-        <h2 className="text-lg font-semibold text-white">Training channel</h2>
+        <h2 className="text-lg font-semibold text-white">Expert training chat and customer question queue</h2>
         <p className="mt-2 text-sm leading-relaxed text-slate-300">
-          This is a separate chat just for your team. It is not the customer-facing chat. Use it to
-          brainstorm better wording for the AI, draft troubleshooting steps, or ask for help shaping
-          how the assistant should talk. Messages here are stored so the team can refer back. The AI
-          in this channel is set to “training mode” so it focuses on prompts and internal knowledge,
-          not live customer support tone for the public app.
+          This is not the customer chat. The training assistant speaks to you as a technician or admin
+          who knows Stealth machines — full answers, not customer-safe sound bites. Use it to refine
+          prompts, walk through faults, and decide what the public bot should say.
+        </p>
+        <p className="mt-3 text-sm leading-relaxed text-slate-300">
+          When the model identifies a hard or ambiguous customer question that needs an official
+          answer, it can add lines that become rows in the{' '}
+          <strong className="text-slate-200">Customer question queue</strong> (like tickets). Resolve
+          them when you have updated the KB, prompts,
+          or process.
         </p>
       </section>
 

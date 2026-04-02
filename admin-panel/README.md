@@ -104,15 +104,12 @@ Rotate these immediately for production use.
 
 ## Required Supabase Migration
 
-Run migration:
+Run these in order (SQL Editor or CLI):
 - `../supabase/migrations/006_technician_learning_admin.sql`
+- `../supabase/migrations/007_learning_snippets_public_read.sql` (anon read snippets for customer AI)
+- `../supabase/migrations/008_admin_customer_question_queue.sql` (training chat queue / “tickets”)
 
-This creates tables used by the admin APIs:
-- `tech_notes`
-- `learning_snippets`
-- `product_catalog`
-- `issue_patterns`
-- `knowledge_documents`
-- `prompt_versions`
-- `training_chat_messages`
-- `learning_events`
+Tables used by the admin APIs include:
+- `tech_notes`, `learning_snippets`, `product_catalog`, `issue_patterns`, `knowledge_documents`
+- `prompt_versions`, `training_chat_messages`, `learning_events`
+- `admin_customer_question_queue` (open items from expert training chat)
