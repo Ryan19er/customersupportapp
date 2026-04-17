@@ -121,13 +121,14 @@ export default function AdminPage() {
   const [tags, setTags] = useState("");
   const [priorAssistantSummary, setPriorAssistantSummary] = useState("");
 
-  // Conversational correction flow — admin just types what was really wrong
-  // and the AI handles symptoms/root_cause/fix/tags extraction automatically.
+  // One-shot correction flow: admin types what was really wrong, hits the
+  // single button, Claude extracts structured fields, we ingest, done.
+  // Then an inline "Test the fix" re-asks the customer's last question.
   const [correctionDraft, setCorrectionDraft] = useState("");
-  const [correctionChat, setCorrectionChat] = useState<
-    Array<{ role: "user" | "assistant"; content: string }>
-  >([]);
   const [correctionBusy, setCorrectionBusy] = useState(false);
+  const [lastCorrectionId, setLastCorrectionId] = useState<string | null>(null);
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [verifyAnswer, setVerifyAnswer] = useState<string | null>(null);
 
   const [trainingInput, setTrainingInput] = useState("");
   const [trainingBusy, setTrainingBusy] = useState(false);
@@ -525,73 +526,23 @@ export default function AdminPage() {
     }
   }
 
-  // Natural-language correction: admin just tells the AI what was really
-  // wrong / what the right answer is. AI either (a) asks one clarifying
-  // question, or (b) publishes automatically when it has enough context.
-  async function sendCorrectionMessage() {
+  // One-shot: admin types correction -> we ship the customer transcript plus
+  // that correction straight into /api/admin/notes/synthesize. No back-and-
+  // forth, no second button. Claude extracts all fields and ingests; we then
+  // offer a single "Test the fix" action that re-asks the customer's original
+  // question so the admin can verify the AI responds with the new answer.
+  async function teachAi() {
     const msg = correctionDraft.trim();
     if (!msg || !activeSession) return;
-    setCorrectionDraft("");
     setCorrectionBusy(true);
-    setNoteStatus("");
-    const history = [...correctionChat, { role: "user" as const, content: msg }];
-    setCorrectionChat(history);
-    try {
-      const transcriptTail = messages
-        .slice(-20)
-        .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
-        .join("\n");
-      const res = await fetch("/api/admin/conversation-notes-chat", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          message: msg,
-          created_by: createdBy,
-          thread: correctionChat,
-          context: {
-            sessionLabel:
-              activeSession.chat_contacts?.full_name ??
-              activeSession.chat_contacts?.email ??
-              activeSession.title ??
-              activeSession.id,
-            transcriptTail,
-          },
-        }),
-      });
-      const { parsed, data } = await readJsonBody<{ reply?: string; error?: string }>(res);
-      if (!parsed || !data) {
-        setNoteStatus(`Correction chat failed (HTTP ${res.status})`);
-        return;
-      }
-      if (!res.ok || !data.reply) {
-        setNoteStatus(data.error ?? "Correction chat failed");
-        return;
-      }
-      setCorrectionChat([...history, { role: "assistant", content: data.reply }]);
-    } finally {
-      setCorrectionBusy(false);
-    }
-  }
-
-  // "Publish" kicks the whole correction_chat (admin ↔ AI) into the synthesize
-  // endpoint, which uses Claude to extract symptoms / root cause / fix /
-  // machine / tags and writes a canonical correction in one shot.
-  async function publishCorrectionFromChat() {
-    if (!activeSession) return;
-    if (correctionChat.length === 0) {
-      setNoteStatus("Type what was really wrong first.");
-      return;
-    }
     setNoteBusy(true);
-    setNoteStatus("Publishing correction…");
+    setNoteStatus("Teaching the AI…");
+    setLastCorrectionId(null);
+    setVerifyAnswer(null);
     try {
       const customerTranscript = messages.slice(-20).map((m) => ({
         role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
         content: m.content,
-      }));
-      const adminThread = correctionChat.map((m) => ({
-        role: m.role,
-        content: `ADMIN_CORRECTION (${m.role}): ${m.content}`,
       }));
       const res = await fetch("/api/admin/notes/synthesize", {
         method: "POST",
@@ -602,7 +553,13 @@ export default function AdminPage() {
           session_id: activeSession.id,
           message_id: selectedMessageId,
           created_by: createdBy,
-          thread: [...customerTranscript, ...adminThread],
+          thread: [
+            ...customerTranscript,
+            {
+              role: "user" as const,
+              content: `ADMIN_CORRECTION from ${createdBy}: ${msg}`,
+            },
+          ],
         }),
       });
       const { parsed, data } = await readJsonBody<{
@@ -615,26 +572,78 @@ export default function AdminPage() {
         };
       }>(res);
       if (!parsed || !data) {
-        setNoteStatus(`Publish failed (HTTP ${res.status})`);
+        setNoteStatus(`Failed (HTTP ${res.status})`);
         return;
       }
       if (!res.ok) {
-        setNoteStatus(data.error ?? "Publish failed");
+        setNoteStatus(data.error ?? "Failed to teach the AI");
         return;
       }
+      const correctionId = data.ingestion?.correctionId ?? null;
+      setLastCorrectionId(correctionId);
+      setCorrectionDraft("");
       const parts: string[] = [];
-      parts.push(`Correction ${data.ingestion?.correctionId ?? "n/a"} saved.`);
-      parts.push("Live for the next customer chat turn.");
+      parts.push("Applied. The AI will use this on the next customer turn.");
       if (data.ingestion?.canonicalStatus === "draft" && data.ingestion?.reviewQueueId) {
-        parts.push(`Queued for review (${data.ingestion.reviewQueueId}).`);
+        parts.push(`(Queued as canonical rule ${data.ingestion.reviewQueueId} for review.)`);
       } else if (data.ingestion?.canonicalStatus === "active") {
-        parts.push("Canonical rule is live.");
+        parts.push("(Canonical rule is live.)");
       }
-      if (data.ingestion?.conflictId) parts.push(`Conflict flagged (${data.ingestion.conflictId}).`);
+      if (data.ingestion?.conflictId) {
+        parts.push(`Conflict flagged ${data.ingestion.conflictId} for review.`);
+      }
       setNoteStatus(parts.join(" "));
-      setCorrectionChat([]);
     } finally {
+      setCorrectionBusy(false);
       setNoteBusy(false);
+    }
+  }
+
+  // Verify the correction actually took effect: re-send the customer's most
+  // recent user message through the same chat function the public app uses,
+  // and show whatever the AI says now. This is the "did it work?" check.
+  async function testCorrection() {
+    if (!activeSession) return;
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    const query = lastUser?.content?.trim();
+    if (!query) {
+      setNoteStatus("No customer question found in this thread to re-test.");
+      return;
+    }
+    setVerifyBusy(true);
+    setVerifyAnswer(null);
+    try {
+      const res = await fetch("/api/admin/conversation-notes-chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          // Uses the admin-side proxy, which in turn calls anthropic-chat.
+          // That's the same retrieval + canonical-law pipeline the customer
+          // chat uses, so if the correction landed, this reply reflects it.
+          message: query,
+          created_by: createdBy,
+          thread: [],
+          context: {
+            sessionLabel:
+              activeSession.chat_contacts?.full_name ??
+              activeSession.chat_contacts?.email ??
+              activeSession.title ??
+              activeSession.id,
+          },
+        }),
+      });
+      const { parsed, data } = await readJsonBody<{ reply?: string; error?: string }>(res);
+      if (!parsed || !data) {
+        setVerifyAnswer(`Test failed (HTTP ${res.status})`);
+        return;
+      }
+      if (!res.ok || !data.reply) {
+        setVerifyAnswer(data.error ?? "Test failed");
+        return;
+      }
+      setVerifyAnswer(data.reply);
+    } finally {
+      setVerifyBusy(false);
     }
   }
 
@@ -1047,35 +1056,10 @@ export default function AdminPage() {
 
                 <section className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">
                   <div className="flex items-center justify-between">
-                    <h2 className="font-semibold">Correct & Publish</h2>
+                    <h2 className="font-semibold">Teach the AI</h2>
                     <span className="text-[11px] text-slate-500">
-                      Just tell the AI what was really wrong — it fills in the rest.
+                      Type what was really wrong. One button. The AI extracts and publishes.
                     </span>
-                  </div>
-
-                  <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-950 p-3">
-                    {correctionChat.length === 0 ? (
-                      <p className="text-xs text-slate-500 italic">
-                        Example: &ldquo;The real issue on that SS3015CP nitrogen alarm was a stuck
-                        proportional valve — we cleaned it and re-seated the connector.&rdquo;
-                      </p>
-                    ) : (
-                      correctionChat.map((m, i) => (
-                        <div
-                          key={i}
-                          className={
-                            m.role === "user"
-                              ? "rounded-md bg-slate-800/80 px-3 py-2 text-sm"
-                              : "rounded-md bg-emerald-950/40 border border-emerald-900/60 px-3 py-2 text-sm text-emerald-100"
-                          }
-                        >
-                          <span className="mr-2 text-[10px] uppercase tracking-wide text-slate-400">
-                            {m.role === "user" ? "you" : "ai"}
-                          </span>
-                          <span className="whitespace-pre-wrap">{m.content}</span>
-                        </div>
-                      ))
-                    )}
                   </div>
 
                   <textarea
@@ -1084,43 +1068,25 @@ export default function AdminPage() {
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                         e.preventDefault();
-                        void sendCorrectionMessage();
+                        void teachAi();
                       }
                     }}
-                    rows={3}
-                    placeholder="Talk to the AI like you&apos;re teaching it. Cmd/Ctrl+Enter to send."
+                    rows={4}
+                    placeholder={
+                      'e.g. "The real issue on that SS3015CP nitrogen alarm was a stuck proportional valve — we cleaned it and re-seated the connector." (Cmd/Ctrl+Enter)'
+                    }
                     className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
                   />
 
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      onClick={sendCorrectionMessage}
+                      onClick={teachAi}
                       disabled={correctionBusy || !activeSession || !correctionDraft.trim()}
-                      className="rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-medium disabled:opacity-50"
+                      className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium disabled:opacity-50"
                     >
-                      {correctionBusy ? "Thinking…" : "Send to AI"}
+                      {correctionBusy ? "Teaching…" : "Teach the AI"}
                     </button>
-                    <button
-                      type="button"
-                      onClick={publishCorrectionFromChat}
-                      disabled={noteBusy || !activeSession || correctionChat.length === 0}
-                      className="rounded-md bg-red-600 px-3 py-2 text-xs font-medium disabled:opacity-50"
-                    >
-                      {noteBusy ? "Publishing…" : "Publish correction"}
-                    </button>
-                    {correctionChat.length > 0 ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCorrectionChat([]);
-                          setNoteStatus("");
-                        }}
-                        className="rounded-md border border-slate-800 px-3 py-2 text-xs text-slate-400"
-                      >
-                        Clear
-                      </button>
-                    ) : null}
                     <span className="ml-auto text-[11px] text-slate-500">
                       signed as{" "}
                       <input
@@ -1130,7 +1096,38 @@ export default function AdminPage() {
                       />
                     </span>
                   </div>
-                  {noteStatus ? <p className="text-sm text-emerald-400">{noteStatus}</p> : null}
+
+                  {noteStatus ? (
+                    <p className="rounded-md border border-emerald-900/60 bg-emerald-950/40 px-3 py-2 text-sm text-emerald-200">
+                      {noteStatus}
+                    </p>
+                  ) : null}
+
+                  {/* Verify: re-ask the customer's last question so the admin
+                      can confirm the correction actually changed the answer. */}
+                  {lastCorrectionId ? (
+                    <div className="rounded-md border border-slate-800 bg-slate-950 p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs text-slate-400">
+                          Verify it stuck — re-asks the customer&apos;s last question through the
+                          same pipeline as the public chat.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={testCorrection}
+                          disabled={verifyBusy}
+                          className="rounded-md border border-emerald-700 bg-emerald-900/30 px-3 py-1.5 text-xs font-medium text-emerald-200 disabled:opacity-50"
+                        >
+                          {verifyBusy ? "Asking AI…" : "Test the fix"}
+                        </button>
+                      </div>
+                      {verifyAnswer ? (
+                        <div className="rounded border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 whitespace-pre-wrap">
+                          {verifyAnswer}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </section>
               </>
             ) : null}
