@@ -12,9 +12,9 @@ export async function GET(_req: NextRequest) {
     supabase.from("knowledge_chunks").select("*", { count: "exact", head: true }),
     supabase
       .from("knowledge_documents")
-      .select("id,title,source_ref,product_slug,ingested_at,chunk_count")
+      .select("id,title,display_title,source_type,source_ref,product_slug,subsystem,doc_type,ingested_at,chunk_count,file_url,byte_size")
       .order("ingested_at", { ascending: false, nullsFirst: false })
-      .limit(10),
+      .limit(50),
     supabase
       .from("knowledge_chunks")
       .select("product_slug")
