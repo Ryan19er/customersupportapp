@@ -121,6 +121,14 @@ export default function AdminPage() {
   const [tags, setTags] = useState("");
   const [priorAssistantSummary, setPriorAssistantSummary] = useState("");
 
+  // Conversational correction flow — admin just types what was really wrong
+  // and the AI handles symptoms/root_cause/fix/tags extraction automatically.
+  const [correctionDraft, setCorrectionDraft] = useState("");
+  const [correctionChat, setCorrectionChat] = useState<
+    Array<{ role: "user" | "assistant"; content: string }>
+  >([]);
+  const [correctionBusy, setCorrectionBusy] = useState(false);
+
   const [trainingInput, setTrainingInput] = useState("");
   const [trainingBusy, setTrainingBusy] = useState(false);
   const [trainingLog, setTrainingLog] = useState<TrainingChatMsg[]>([]);
@@ -500,6 +508,119 @@ export default function AdminPage() {
       setMachineSerial("");
       setTags("");
       setPriorAssistantSummary("");
+    } finally {
+      setNoteBusy(false);
+    }
+  }
+
+  // Natural-language correction: admin just tells the AI what was really
+  // wrong / what the right answer is. AI either (a) asks one clarifying
+  // question, or (b) publishes automatically when it has enough context.
+  async function sendCorrectionMessage() {
+    const msg = correctionDraft.trim();
+    if (!msg || !activeSession) return;
+    setCorrectionDraft("");
+    setCorrectionBusy(true);
+    setNoteStatus("");
+    const history = [...correctionChat, { role: "user" as const, content: msg }];
+    setCorrectionChat(history);
+    try {
+      const transcriptTail = messages
+        .slice(-20)
+        .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+        .join("\n");
+      const res = await fetch("/api/admin/conversation-notes-chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          message: msg,
+          created_by: createdBy,
+          thread: correctionChat,
+          context: {
+            sessionLabel:
+              activeSession.chat_contacts?.full_name ??
+              activeSession.chat_contacts?.email ??
+              activeSession.title ??
+              activeSession.id,
+            transcriptTail,
+          },
+        }),
+      });
+      const { parsed, data } = await readJsonBody<{ reply?: string; error?: string }>(res);
+      if (!parsed || !data) {
+        setNoteStatus(`Correction chat failed (HTTP ${res.status})`);
+        return;
+      }
+      if (!res.ok || !data.reply) {
+        setNoteStatus(data.error ?? "Correction chat failed");
+        return;
+      }
+      setCorrectionChat([...history, { role: "assistant", content: data.reply }]);
+    } finally {
+      setCorrectionBusy(false);
+    }
+  }
+
+  // "Publish" kicks the whole correction_chat (admin ↔ AI) into the synthesize
+  // endpoint, which uses Claude to extract symptoms / root cause / fix /
+  // machine / tags and writes a canonical correction in one shot.
+  async function publishCorrectionFromChat() {
+    if (!activeSession) return;
+    if (correctionChat.length === 0) {
+      setNoteStatus("Type what was really wrong first.");
+      return;
+    }
+    setNoteBusy(true);
+    setNoteStatus("Publishing correction…");
+    try {
+      const customerTranscript = messages.slice(-20).map((m) => ({
+        role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
+        content: m.content,
+      }));
+      const adminThread = correctionChat.map((m) => ({
+        role: m.role,
+        content: `ADMIN_CORRECTION (${m.role}): ${m.content}`,
+      }));
+      const res = await fetch("/api/admin/notes/synthesize", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          conversation_channel: activeSession.channel,
+          contact_id: activeSession.contact_id ?? null,
+          session_id: activeSession.id,
+          message_id: selectedMessageId,
+          created_by: createdBy,
+          thread: [...customerTranscript, ...adminThread],
+        }),
+      });
+      const { parsed, data } = await readJsonBody<{
+        error?: string;
+        ingestion?: {
+          correctionId?: string;
+          conflictId?: string | null;
+          reviewQueueId?: string | null;
+          canonicalStatus?: "draft" | "active";
+        };
+      }>(res);
+      if (!parsed || !data) {
+        setNoteStatus(`Publish failed (HTTP ${res.status})`);
+        return;
+      }
+      if (!res.ok) {
+        setNoteStatus(data.error ?? "Publish failed");
+        return;
+      }
+      const parts: string[] = [];
+      parts.push(`Correction ${data.ingestion?.correctionId ?? "n/a"} saved.`);
+      parts.push("Live for the next customer chat turn.");
+      if (data.ingestion?.canonicalStatus === "draft" && data.ingestion?.reviewQueueId) {
+        parts.push(`Queued for review (${data.ingestion.reviewQueueId}).`);
+      } else if (data.ingestion?.canonicalStatus === "active") {
+        parts.push("Canonical rule is live.");
+      }
+      if (data.ingestion?.conflictId) parts.push(`Conflict flagged (${data.ingestion.conflictId}).`);
+      setNoteStatus(parts.join(" "));
+      setCorrectionChat([]);
     } finally {
       setNoteBusy(false);
     }
@@ -912,81 +1033,91 @@ export default function AdminPage() {
                   </div>
                 </section>
 
-                <section className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-2">
-                  <h2 className="font-semibold">Correct & Publish (customer AI law)</h2>
-                  <p className="text-sm text-slate-400">
-                    Save a correction once and it auto-applies immediately to runtime context. If it
-                    conflicts with existing canonical guidance, it is still applied but flagged for
-                    manual review.
-                  </p>
-                  <input
-                    value={createdBy}
-                    onChange={(e) => setCreatedBy(e.target.value)}
-                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-                    placeholder="Your name"
-                  />
-                  <textarea
-                    value={symptoms}
-                    onChange={(e) => setSymptoms(e.target.value)}
-                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-                    placeholder="Symptoms / what the customer or chat showed"
-                    rows={2}
-                  />
-                  <textarea
-                    value={priorAssistantSummary}
-                    onChange={(e) => setPriorAssistantSummary(e.target.value)}
-                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-                    placeholder="Optional: what the customer AI already tried in chat (so we learn gap vs fix)"
-                    rows={2}
-                  />
-                  <textarea
-                    value={rootCause}
-                    onChange={(e) => setRootCause(e.target.value)}
-                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-                    placeholder="Root cause"
-                    rows={2}
-                  />
-                  <textarea
-                    value={fixSteps}
-                    onChange={(e) => setFixSteps(e.target.value)}
-                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-                    placeholder="Fix steps / what worked"
-                    rows={3}
-                  />
-                  <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                    <input
-                      value={partsUsed}
-                      onChange={(e) => setPartsUsed(e.target.value)}
-                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-                      placeholder="Parts (optional)"
-                    />
-                    <input
-                      value={tags}
-                      onChange={(e) => setTags(e.target.value)}
-                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-                      placeholder="Tags, comma-separated"
-                    />
-                    <input
-                      value={machineModel}
-                      onChange={(e) => setMachineModel(e.target.value)}
-                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-                      placeholder="Machine model"
-                    />
-                    <input
-                      value={machineSerial}
-                      onChange={(e) => setMachineSerial(e.target.value)}
-                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-                      placeholder="Serial"
-                    />
+                <section className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h2 className="font-semibold">Correct & Publish</h2>
+                    <span className="text-[11px] text-slate-500">
+                      Just tell the AI what was really wrong — it fills in the rest.
+                    </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={saveNote}
-                    disabled={noteBusy || !activeSession}
-                    className="rounded-md bg-red-600 px-3 py-2 text-sm font-medium disabled:opacity-60"
-                  >
-                    {noteBusy ? "Publishing…" : "Correct & Publish"}
-                  </button>
+
+                  <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-950 p-3">
+                    {correctionChat.length === 0 ? (
+                      <p className="text-xs text-slate-500 italic">
+                        Example: &ldquo;The real issue on that SS3015CP nitrogen alarm was a stuck
+                        proportional valve — we cleaned it and re-seated the connector.&rdquo;
+                      </p>
+                    ) : (
+                      correctionChat.map((m, i) => (
+                        <div
+                          key={i}
+                          className={
+                            m.role === "user"
+                              ? "rounded-md bg-slate-800/80 px-3 py-2 text-sm"
+                              : "rounded-md bg-emerald-950/40 border border-emerald-900/60 px-3 py-2 text-sm text-emerald-100"
+                          }
+                        >
+                          <span className="mr-2 text-[10px] uppercase tracking-wide text-slate-400">
+                            {m.role === "user" ? "you" : "ai"}
+                          </span>
+                          <span className="whitespace-pre-wrap">{m.content}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  <textarea
+                    value={correctionDraft}
+                    onChange={(e) => setCorrectionDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        void sendCorrectionMessage();
+                      }
+                    }}
+                    rows={3}
+                    placeholder="Talk to the AI like you&apos;re teaching it. Cmd/Ctrl+Enter to send."
+                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                  />
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={sendCorrectionMessage}
+                      disabled={correctionBusy || !activeSession || !correctionDraft.trim()}
+                      className="rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-medium disabled:opacity-50"
+                    >
+                      {correctionBusy ? "Thinking…" : "Send to AI"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={publishCorrectionFromChat}
+                      disabled={noteBusy || !activeSession || correctionChat.length === 0}
+                      className="rounded-md bg-red-600 px-3 py-2 text-xs font-medium disabled:opacity-50"
+                    >
+                      {noteBusy ? "Publishing…" : "Publish correction"}
+                    </button>
+                    {correctionChat.length > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCorrectionChat([]);
+                          setNoteStatus("");
+                        }}
+                        className="rounded-md border border-slate-800 px-3 py-2 text-xs text-slate-400"
+                      >
+                        Clear
+                      </button>
+                    ) : null}
+                    <span className="ml-auto text-[11px] text-slate-500">
+                      signed as{" "}
+                      <input
+                        value={createdBy}
+                        onChange={(e) => setCreatedBy(e.target.value)}
+                        className="w-24 rounded border border-slate-800 bg-slate-950 px-1 py-0.5 text-[11px] text-slate-300"
+                      />
+                    </span>
+                  </div>
                   {noteStatus ? <p className="text-sm text-emerald-400">{noteStatus}</p> : null}
                 </section>
               </>
