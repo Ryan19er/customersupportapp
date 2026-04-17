@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { buildLearningSnippetText } from "@/lib/build-learning-snippet-text";
 import { getSupabaseAdminClientSafe } from "@/lib/supabase-server";
+import { ingestCorrection } from "@/lib/ingest-correction";
 
 const noteSchema = z.object({
-  contact_id: z.string().uuid(),
+  conversation_channel: z.enum(["support", "auth"]).default("support"),
+  contact_id: z.string().uuid().optional().nullable(),
   session_id: z.string().uuid(),
   message_id: z.string().uuid().optional().nullable(),
   symptoms: z.string().min(1),
@@ -52,6 +53,7 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid note payload" }, { status: 400 });
   }
+
   const init = getSupabaseAdminClientSafe();
   if (!init.ok) {
     return NextResponse.json({ error: init.error }, { status: 503 });
@@ -59,12 +61,14 @@ export async function POST(req: NextRequest) {
   const supabase = init.client;
   const payload = parsed.data;
 
-  const { data, error } = await supabase
+  const isSupport = payload.conversation_channel === "support";
+
+  const { data: note, error: noteErr } = await supabase
     .from("tech_notes")
     .insert({
-      contact_id: payload.contact_id,
-      session_id: payload.session_id,
-      message_id: payload.message_id,
+      contact_id: isSupport ? payload.contact_id : null,
+      session_id: isSupport ? payload.session_id : null,
+      message_id: isSupport ? payload.message_id : null,
       symptoms: payload.symptoms,
       root_cause: payload.root_cause,
       fix_steps: payload.fix_steps,
@@ -78,34 +82,37 @@ export async function POST(req: NextRequest) {
     .select("*")
     .single();
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  if (noteErr || !note) {
+    return NextResponse.json({ error: noteErr?.message ?? "Failed to create note" }, { status: 500 });
   }
 
-  const snippetText = buildLearningSnippetText({
-    symptoms: data.symptoms,
-    root_cause: data.root_cause,
-    fix_steps: data.fix_steps,
-    parts_used: data.parts_used,
-    prior_assistant_summary: data.prior_assistant_summary,
-    tags: data.tags ?? [],
-  });
+  try {
+    const ingestion = await ingestCorrection(supabase, {
+      source: "manual_note",
+      sourceRefId: note.id,
+      conversationChannel: payload.conversation_channel,
+      supportSessionId: isSupport ? payload.session_id : null,
+      supportMessageId: isSupport ? payload.message_id ?? null : null,
+      authSessionId: !isSupport ? payload.session_id : null,
+      authMessageId: !isSupport ? payload.message_id ?? null : null,
+      customerIdentifier: payload.contact_id ?? null,
+      machineModel: payload.machine_model ?? null,
+      machineSerial: payload.machine_serial ?? null,
+      symptoms: payload.symptoms,
+      priorAiSummary: payload.prior_assistant_summary ?? null,
+      rootCause: payload.root_cause,
+      fixSteps: payload.fix_steps,
+      partsUsed: payload.parts_used ?? null,
+      tags: payload.tags,
+      createdBy: payload.created_by,
+      techNoteId: note.id,
+    });
 
-  const upsertSnip = await supabase.from("learning_snippets").upsert(
-    {
-      tech_note_id: data.id,
-      snippet_text: snippetText,
-      machine_model: data.machine_model,
-      machine_serial: data.machine_serial,
-      issue_tags: data.tags ?? [],
-      confidence: 0.5,
-    },
-    { onConflict: "tech_note_id" },
-  );
-  if (upsertSnip.error) {
-    console.error("learning_snippets upsert:", upsertSnip.error.message);
+    return NextResponse.json({ note, ingestion });
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Correction ingestion failed", note },
+      { status: 500 },
+    );
   }
-
-  return NextResponse.json({ note: data });
 }
-

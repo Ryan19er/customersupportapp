@@ -15,6 +15,7 @@ class ChatRepository {
   final String? contactId;
 
   bool get _contactMode => contactId != null;
+  String get sessionChannel => _contactMode ? 'support' : 'auth';
 
   String? get _userId => _client.auth.currentUser?.id;
 

@@ -19,6 +19,40 @@ class AnthropicApiException implements Exception {
   String toString() => 'AnthropicApiException: $message';
 }
 
+/// Evidence row displayed to staff/debug so they can see why the bot answered the way it did.
+class EvidenceCitation {
+  const EvidenceCitation({
+    required this.idx,
+    required this.type,
+    required this.id,
+    this.heading,
+    this.productSlug,
+    this.subsystem,
+    this.score = 0.0,
+  });
+  final int idx;
+  final String type; // chunk | canonical | snippet
+  final String id;
+  final String? heading;
+  final String? productSlug;
+  final String? subsystem;
+  final double score;
+}
+
+/// Structured reply from the Anthropic proxy — keeps backward compat via [text].
+class ClaudeReply {
+  const ClaudeReply({
+    required this.text,
+    this.evidence = const [],
+    this.resolvedProduct,
+    this.auditId,
+  });
+  final String text;
+  final List<EvidenceCitation> evidence;
+  final String? resolvedProduct;
+  final String? auditId;
+}
+
 class AnthropicClaudeService {
   AnthropicClaudeService({
     required SupabaseClient client,
@@ -76,11 +110,59 @@ class AnthropicClaudeService {
     };
   }
 
+  /// Detailed variant that also returns the evidence citations returned by the
+  /// edge function. Flutter screens that want a Sources accordion should call
+  /// this instead of [complete].
+  Future<ClaudeReply> completeDetailed({
+    required List<ChatTurn> history,
+    required String nextUserMessage,
+    String additionalSystemContext = '',
+    String? systemPromptOverride,
+    String? sessionId,
+    String? sessionChannel,
+    bool includeRuntimeContext = false,
+  }) async {
+    final raw = await _invoke(
+      history: history,
+      nextUserMessage: nextUserMessage,
+      additionalSystemContext: additionalSystemContext,
+      systemPromptOverride: systemPromptOverride,
+      sessionId: sessionId,
+      sessionChannel: sessionChannel,
+      includeRuntimeContext: includeRuntimeContext,
+    );
+    return raw;
+  }
+
   Future<String> complete({
     required List<ChatTurn> history,
     required String nextUserMessage,
     String additionalSystemContext = '',
     String? systemPromptOverride,
+    String? sessionId,
+    String? sessionChannel,
+    bool includeRuntimeContext = false,
+  }) async {
+    final reply = await _invoke(
+      history: history,
+      nextUserMessage: nextUserMessage,
+      additionalSystemContext: additionalSystemContext,
+      systemPromptOverride: systemPromptOverride,
+      sessionId: sessionId,
+      sessionChannel: sessionChannel,
+      includeRuntimeContext: includeRuntimeContext,
+    );
+    return reply.text;
+  }
+
+  Future<ClaudeReply> _invoke({
+    required List<ChatTurn> history,
+    required String nextUserMessage,
+    String additionalSystemContext = '',
+    String? systemPromptOverride,
+    String? sessionId,
+    String? sessionChannel,
+    bool includeRuntimeContext = false,
   }) async {
     var merged = _mergeAlternating([
       ...history,
@@ -118,6 +200,12 @@ class AnthropicClaudeService {
           'system': system,
           'messages': messages,
           'client': kIsWeb ? 'web' : 'native',
+          if (includeRuntimeContext && sessionId != null && sessionChannel != null)
+            'resolver': {
+              'session_id': sessionId,
+              'session_channel': sessionChannel,
+              'include_runtime_context': true,
+            },
         },
       );
 
@@ -129,7 +217,32 @@ class AnthropicClaudeService {
         );
       }
       if (data is Map && data['text'] is String) {
-        return data['text'] as String;
+        final text = data['text'] as String;
+        final evidenceList = data['evidence'];
+        final List<EvidenceCitation> evidence = [];
+        if (evidenceList is List) {
+          for (final e in evidenceList) {
+            if (e is! Map) continue;
+            evidence.add(EvidenceCitation(
+              idx: (e['idx'] as num?)?.toInt() ?? evidence.length + 1,
+              type: e['type']?.toString() ?? 'chunk',
+              id: e['id']?.toString() ?? '',
+              heading: e['heading']?.toString(),
+              productSlug: e['product_slug']?.toString(),
+              subsystem: e['subsystem']?.toString(),
+              score: (e['score'] as num?)?.toDouble() ?? 0.0,
+            ));
+          }
+        }
+        final meta = data['resolver_meta'];
+        final resolved = (meta is Map) ? meta['product_slug']?.toString() : null;
+        final auditId = (meta is Map) ? meta['audit_id']?.toString() : null;
+        return ClaudeReply(
+          text: text,
+          evidence: evidence,
+          resolvedProduct: resolved,
+          auditId: auditId,
+        );
       }
       throw AnthropicApiException('Unexpected proxy response: missing `text`');
     } catch (e) {

@@ -42,6 +42,9 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _loadingThread = true;
   bool _sending = false;
   String? _error;
+  // Evidence for the most-recent assistant reply, rendered as an accordion.
+  List<EvidenceCitation> _lastEvidence = const [];
+  String? _lastResolvedProduct;
 
   @override
   void initState() {
@@ -112,6 +115,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToEnd();
 
     try {
+      ClaudeReply? lastReply;
       await widget.repository.appendExchange(
         sessionId: _sessionId!,
         userText: text,
@@ -121,23 +125,21 @@ class _ChatScreenState extends State<ChatScreen> {
                 (m) => ChatTurn(role: m.role, text: m.content),
               )
               .toList();
-          String learning = "";
-          try {
-            learning = await widget.repository
-                .fetchLearningSnippetsContext(widget.profile);
-          } catch (_) {
-            /* optional */
-          }
-          final ctx = widget.profile.anthropicContextBlock;
-          final extra =
-              learning.trim().isEmpty ? ctx : '$ctx\n\n${learning.trim()}';
-          return _claude.complete(
+          lastReply = await _claude.completeDetailed(
             history: history,
             nextUserMessage: userMsg,
-            additionalSystemContext: extra,
+            additionalSystemContext: widget.profile.anthropicContextBlock,
+            sessionId: _sessionId,
+            sessionChannel: widget.repository.sessionChannel,
+            includeRuntimeContext: true,
           );
+          return lastReply!.text;
         },
       );
+      if (lastReply != null) {
+        _lastEvidence = lastReply!.evidence;
+        _lastResolvedProduct = lastReply!.resolvedProduct;
+      }
       final fresh = await widget.repository.loadMessages(_sessionId!);
       final elapsed = DateTime.now().difference(startedAt);
       const minThinking = Duration(milliseconds: 700);
@@ -294,6 +296,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
               ),
             ),
+            if (_lastEvidence.isNotEmpty)
+              _SourcesAccordion(
+                evidence: _lastEvidence,
+                resolvedProduct: _lastResolvedProduct,
+              ),
             SafeArea(
               top: false,
               child: Padding(
@@ -353,6 +360,90 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         ),
+      ),
+    );
+  }
+}
+
+class _SourcesAccordion extends StatefulWidget {
+  const _SourcesAccordion({required this.evidence, required this.resolvedProduct});
+  final List<EvidenceCitation> evidence;
+  final String? resolvedProduct;
+
+  @override
+  State<_SourcesAccordion> createState() => _SourcesAccordionState();
+}
+
+class _SourcesAccordionState extends State<_SourcesAccordion> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final count = widget.evidence.length;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      decoration: BoxDecoration(
+        color: StealthColors.panelBlack.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: StealthColors.mist.withValues(alpha: 0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _open = !_open),
+            borderRadius: BorderRadius.circular(10),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  Icon(
+                    _open ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: StealthColors.mist.withValues(alpha: 0.8),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      widget.resolvedProduct == null
+                          ? 'Sources used ($count)'
+                          : 'Sources used ($count · ${widget.resolvedProduct})',
+                      style: TextStyle(
+                        color: StealthColors.mist.withValues(alpha: 0.85),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_open)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final e in widget.evidence)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        '[E${e.idx}] ${e.type} · ${e.productSlug ?? "general"}'
+                        '${e.subsystem != null ? " · ${e.subsystem}" : ""}'
+                        '${e.heading != null ? " · ${e.heading}" : ""}'
+                        ' · score ${e.score.toStringAsFixed(2)}',
+                        style: TextStyle(
+                          color: StealthColors.mist.withValues(alpha: 0.7),
+                          fontSize: 11.5,
+                          height: 1.3,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+        ],
       ),
     );
   }

@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { buildLearningSnippetText } from "@/lib/build-learning-snippet-text";
 import { getSupabaseAdminClientSafe } from "@/lib/supabase-server";
+import { ingestCorrection } from "@/lib/ingest-correction";
 
 const threadMsg = z.object({
   role: z.enum(["user", "assistant"]),
@@ -10,7 +10,8 @@ const threadMsg = z.object({
 });
 
 const bodySchema = z.object({
-  contact_id: z.string().uuid(),
+  conversation_channel: z.enum(["support", "auth"]).default("support"),
+  contact_id: z.string().uuid().optional().nullable(),
   session_id: z.string().uuid(),
   message_id: z.string().uuid().optional().nullable(),
   created_by: z.string().min(1),
@@ -25,7 +26,6 @@ const extractedSchema = z.object({
   machine_model: z.string().nullable().optional(),
   machine_serial: z.string().nullable().optional(),
   tags: z.array(z.string()).default([]),
-  /** What the customer-facing AI already suggested in the thread (may be wrong or incomplete). */
   prior_assistant_guidance: z.string().default(""),
 });
 
@@ -40,7 +40,7 @@ const extractionSystem = `You extract structured repair notes for a database. Th
 
 Output ONLY valid JSON, no markdown, no commentary. Keys:
 - symptoms (string): what the customer reported / showed (from chat), not the final tech diagnosis
-- prior_assistant_guidance (string): concise summary of what the ASSISTANT already suggested in this thread before the technician's conclusion (e.g. breakers, E-stop, power checks). If there was no assistant or nothing useful, use "Not specified".
+- prior_assistant_guidance (string): concise summary of what the ASSISTANT already suggested in this thread before the technician's conclusion.
 - root_cause (string): actual cause the technician determined
 - fix_steps (string): what fixed it, stepwise if needed
 - parts_used (string or null)
@@ -48,7 +48,7 @@ Output ONLY valid JSON, no markdown, no commentary. Keys:
 - machine_serial (string or null)
 - tags (array of short strings, e.g. power, connector, ethernet — can be empty)
 
-Use the conversation below. If something is unknown, use a short phrase like "Not specified" for required string fields; use null only for optional parts_used/machine_model/machine_serial when absent.`;
+If unknown, use "Not specified" for required fields and null for optional machine/parts values.`;
 
 export async function POST(req: NextRequest) {
   const raw = await req.json().catch(() => null);
@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
   }
   const supabase = init.client;
 
-  const { contact_id, session_id, message_id, created_by, thread } = parsed.data;
+  const { conversation_channel, contact_id, session_id, message_id, created_by, thread } = parsed.data;
 
   const transcript = thread
     .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
@@ -128,12 +128,13 @@ export async function POST(req: NextRequest) {
       ? extracted.prior_assistant_guidance.trim()
       : null;
 
-  const { data, error } = await supabase
+  const isSupport = conversation_channel === "support";
+  const { data: note, error } = await supabase
     .from("tech_notes")
     .insert({
-      contact_id,
-      session_id,
-      message_id: message_id ?? null,
+      contact_id: isSupport ? contact_id ?? null : null,
+      session_id: isSupport ? session_id : null,
+      message_id: isSupport ? message_id ?? null : null,
       symptoms: extracted.symptoms,
       root_cause: extracted.root_cause,
       fix_steps: extracted.fix_steps,
@@ -147,33 +148,37 @@ export async function POST(req: NextRequest) {
     .select("*")
     .single();
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error || !note) {
+    return NextResponse.json({ error: error?.message ?? "Failed to save note" }, { status: 500 });
   }
 
-  const snippetText = buildLearningSnippetText({
-    symptoms: data.symptoms,
-    root_cause: data.root_cause,
-    fix_steps: data.fix_steps,
-    parts_used: data.parts_used,
-    prior_assistant_summary: data.prior_assistant_summary,
-    tags: data.tags ?? [],
-  });
+  try {
+    const ingestion = await ingestCorrection(supabase, {
+      source: "synthesized_note",
+      sourceRefId: note.id,
+      conversationChannel: conversation_channel,
+      supportSessionId: isSupport ? session_id : null,
+      supportMessageId: isSupport ? message_id ?? null : null,
+      authSessionId: !isSupport ? session_id : null,
+      authMessageId: !isSupport ? message_id ?? null : null,
+      customerIdentifier: contact_id ?? null,
+      machineModel: extracted.machine_model ?? null,
+      machineSerial: extracted.machine_serial ?? null,
+      symptoms: extracted.symptoms,
+      priorAiSummary: prior,
+      rootCause: extracted.root_cause,
+      fixSteps: extracted.fix_steps,
+      partsUsed: extracted.parts_used ?? null,
+      tags: extracted.tags,
+      createdBy: created_by,
+      techNoteId: note.id,
+    });
 
-  const upsertSnip = await supabase.from("learning_snippets").upsert(
-    {
-      tech_note_id: data.id,
-      snippet_text: snippetText,
-      machine_model: data.machine_model,
-      machine_serial: data.machine_serial,
-      issue_tags: data.tags ?? [],
-      confidence: 0.5,
-    },
-    { onConflict: "tech_note_id" },
-  );
-  if (upsertSnip.error) {
-    console.error("learning_snippets upsert:", upsertSnip.error.message);
+    return NextResponse.json({ note, ingestion });
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Correction ingestion failed", note },
+      { status: 500 },
+    );
   }
-
-  return NextResponse.json({ note: data });
 }

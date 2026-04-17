@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { readJsonBody } from "@/lib/safe-fetch-json";
 import { AdminHelp } from "./AdminHelp";
 
@@ -60,6 +61,41 @@ type TrainingThreadRow = {
   updated_at: string;
 };
 
+type AuditEvidence = {
+  idx: number;
+  type: string;
+  id: string;
+  heading?: string | null;
+  product_slug?: string | null;
+  subsystem?: string | null;
+  score?: number;
+};
+
+type AuditGrade = {
+  audit_id: string;
+  overall: number | null;
+  scores: Record<string, number> | null;
+  rationale: string | null;
+  auto_flagged: boolean;
+  flag_reason: string | null;
+  created_at: string;
+};
+
+type AuditRow = {
+  id: string;
+  session_id: string;
+  session_channel: string;
+  product_slug: string | null;
+  user_query: string;
+  assistant_text: string;
+  resolver_meta: Record<string, unknown> | null;
+  evidence: AuditEvidence[] | null;
+  model: string | null;
+  latency_ms: number | null;
+  created_at: string;
+  grade: AuditGrade | null;
+};
+
 type TrainingChatMsg = {
   id?: string;
   role: string;
@@ -108,6 +144,7 @@ export default function AdminPage() {
   const [apiError, setApiError] = useState<string | null>(null);
   const [sessionLoadWarnings, setSessionLoadWarnings] = useState<string[]>([]);
   const [messagesError, setMessagesError] = useState<string | null>(null);
+  const [audits, setAudits] = useState<AuditRow[]>([]);
   const [promptError, setPromptError] = useState<string | null>(null);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [selectedPromptKey, setSelectedPromptKey] = useState("support-system");
@@ -209,6 +246,19 @@ export default function AdminPage() {
       setMessages([]);
     } finally {
       setBusyMessages(false);
+    }
+  }, []);
+
+  const loadAudits = useCallback(async (sessionId: string, channel: "support" | "auth") => {
+    try {
+      const res = await fetch(
+        `/api/admin/audits?session_id=${encodeURIComponent(sessionId)}&channel=${encodeURIComponent(channel)}`,
+      );
+      const { parsed, data } = await readJsonBody<{ audits?: AuditRow[] }>(res);
+      if (parsed && data?.audits) setAudits(data.audits);
+      else setAudits([]);
+    } catch {
+      setAudits([]);
     }
   }, []);
 
@@ -381,10 +431,11 @@ export default function AdminPage() {
     const row = sessions.find((s) => s.id === selectedSessionId);
     const channel = row?.channel ?? "support";
     void loadMessages(selectedSessionId, channel);
-  }, [loadMessages, selectedSessionId, sessions]);
+    void loadAudits(selectedSessionId, channel);
+  }, [loadAudits, loadMessages, selectedSessionId, sessions]);
 
   async function saveNote() {
-    if (!activeSession || activeSession.channel === "auth") return;
+    if (!activeSession) return;
     setNoteBusy(true);
     setNoteStatus("");
     try {
@@ -392,7 +443,8 @@ export default function AdminPage() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          contact_id: activeSession.contact_id!,
+          conversation_channel: activeSession.channel,
+          contact_id: activeSession.contact_id ?? null,
           session_id: activeSession.id,
           message_id: selectedMessageId,
           symptoms,
@@ -409,7 +461,15 @@ export default function AdminPage() {
           prior_assistant_summary: priorAssistantSummary.trim() || null,
         }),
       });
-      const { parsed, data } = await readJsonBody<{ error?: string }>(res);
+      const { parsed, data } = await readJsonBody<{
+        error?: string;
+        ingestion?: {
+          correctionId?: string;
+          conflictId?: string | null;
+          reviewQueueId?: string | null;
+          canonicalStatus?: "draft" | "active";
+        };
+      }>(res);
       if (!parsed || !data) {
         setNoteStatus(`Save failed (HTTP ${res.status})`);
         return;
@@ -418,7 +478,20 @@ export default function AdminPage() {
         setNoteStatus(data.error ?? "Failed to save note");
         return;
       }
-      setNoteStatus("Note saved — published to learning snippets for the customer AI.");
+      const correctionId = data.ingestion?.correctionId;
+      const conflictId = data.ingestion?.conflictId;
+      const queueId = data.ingestion?.reviewQueueId;
+      const canonicalStatus = data.ingestion?.canonicalStatus;
+      const parts: string[] = [];
+      parts.push(`Correction ${correctionId ?? "n/a"} saved.`);
+      parts.push("Field snippet is live for the next customer chat turn.");
+      if (canonicalStatus === "draft" && queueId) {
+        parts.push(`Canonical rule queued for review (${queueId}).`);
+      } else if (canonicalStatus === "active") {
+        parts.push("Canonical rule is live.");
+      }
+      if (conflictId) parts.push(`Conflict flagged (${conflictId}).`);
+      setNoteStatus(parts.join(" "));
       setSymptoms("");
       setRootCause("");
       setFixSteps("");
@@ -602,6 +675,18 @@ export default function AdminPage() {
                 How to use
               </button>
             </div>
+            <Link
+              href="/admin/knowledge"
+              className="rounded-md border border-slate-600 px-3 py-2 text-sm text-slate-200"
+            >
+              Knowledge
+            </Link>
+            <Link
+              href="/admin/review"
+              className="rounded-md border border-emerald-700 bg-emerald-900/30 px-3 py-2 text-sm text-emerald-200"
+            >
+              Review queue
+            </Link>
             <button
               type="button"
               onClick={() => {
@@ -792,21 +877,29 @@ export default function AdminPage() {
                       {messagesError ? (
                         <p className="text-sm text-red-400">{messagesError}</p>
                       ) : null}
-                      {messages.map((m) => (
-                        <button
-                          key={m.id}
-                          type="button"
-                          onClick={() => setSelectedMessageId(m.id)}
-                          className={`w-full rounded-md border p-3 text-left ${
-                            selectedMessageId === m.id
-                              ? "border-emerald-500 bg-slate-800"
-                              : "border-slate-800 bg-slate-950"
-                          }`}
-                        >
-                          <p className="text-xs uppercase tracking-wide text-slate-400">{m.role}</p>
-                          <p className="whitespace-pre-wrap text-sm">{m.content}</p>
-                        </button>
-                      ))}
+                      {messages.map((m) => {
+                        const audit =
+                          m.role === "assistant"
+                            ? audits.find((a) => a.assistant_text?.trim() === m.content?.trim())
+                            : null;
+                        return (
+                          <div key={m.id} className="space-y-1">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedMessageId(m.id)}
+                              className={`w-full rounded-md border p-3 text-left ${
+                                selectedMessageId === m.id
+                                  ? "border-emerald-500 bg-slate-800"
+                                  : "border-slate-800 bg-slate-950"
+                              }`}
+                            >
+                              <p className="text-xs uppercase tracking-wide text-slate-400">{m.role}</p>
+                              <p className="whitespace-pre-wrap text-sm">{m.content}</p>
+                            </button>
+                            {audit ? <AuditRibbon audit={audit} /> : null}
+                          </div>
+                        );
+                      })}
                     </div>
                     <button
                       type="button"
@@ -820,19 +913,12 @@ export default function AdminPage() {
                 </section>
 
                 <section className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-2">
-                  <h2 className="font-semibold">Technician notes → AI training</h2>
+                  <h2 className="font-semibold">Correct & Publish (customer AI law)</h2>
                   <p className="text-sm text-slate-400">
-                    Your team built these machines — record what actually failed and how you fixed it.
-                    Each save publishes a learning snippet (field-verified patterns the customer AI can
-                    suggest when symptoms match). Migrations 006–007 + 012.
+                    Save a correction once and it auto-applies immediately to runtime context. If it
+                    conflicts with existing canonical guidance, it is still applied but flagged for
+                    manual review.
                   </p>
-                  {activeSession?.channel === "auth" ? (
-                    <p className="rounded-md border border-amber-800/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-100/90">
-                      This thread is from a signed-in account. Technician
-                      notes are stored against contact-based sessions only for now—read the transcript here;
-                      use the training assistant tab to capture patterns until auth-linked notes ship.
-                    </p>
-                  ) : null}
                   <input
                     value={createdBy}
                     onChange={(e) => setCreatedBy(e.target.value)}
@@ -896,10 +982,10 @@ export default function AdminPage() {
                   <button
                     type="button"
                     onClick={saveNote}
-                    disabled={noteBusy || !activeSession || activeSession.channel === "auth"}
+                    disabled={noteBusy || !activeSession}
                     className="rounded-md bg-red-600 px-3 py-2 text-sm font-medium disabled:opacity-60"
                   >
-                    {noteBusy ? "Saving…" : "Save note"}
+                    {noteBusy ? "Publishing…" : "Correct & Publish"}
                   </button>
                   {noteStatus ? <p className="text-sm text-emerald-400">{noteStatus}</p> : null}
                 </section>
@@ -1170,5 +1256,62 @@ export default function AdminPage() {
         ) : null}
       </div>
     </main>
+  );
+}
+
+function AuditRibbon({ audit }: { audit: AuditRow }) {
+  const [open, setOpen] = useState(false);
+  const grade = audit.grade;
+  const overall = grade?.overall ?? null;
+  const overallText = overall === null ? "—" : overall.toFixed(2);
+  const flagged = grade?.auto_flagged === true;
+  const evidence = audit.evidence ?? [];
+  return (
+    <div className="rounded-md border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs text-slate-300">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-2 text-left"
+      >
+        <span className="flex items-center gap-2">
+          <span className={flagged ? "text-amber-300" : "text-emerald-300"}>
+            {flagged ? "Flagged" : "OK"}
+          </span>
+          <span className="text-slate-400">grade {overallText}</span>
+          {audit.product_slug ? (
+            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-200">
+              {audit.product_slug}
+            </span>
+          ) : null}
+          <span className="text-slate-500">· {evidence.length} sources</span>
+        </span>
+        <span className="text-slate-500">{open ? "hide" : "show"}</span>
+      </button>
+      {open ? (
+        <div className="mt-2 space-y-1">
+          {grade?.rationale ? (
+            <p className="text-[11px] text-slate-400 italic">{grade.rationale}</p>
+          ) : null}
+          {grade?.flag_reason ? (
+            <p className="text-[11px] text-amber-300">Reason: {grade.flag_reason}</p>
+          ) : null}
+          {evidence.length === 0 ? (
+            <p className="text-[11px] text-slate-500">No evidence was retrieved for this reply.</p>
+          ) : (
+            <ul className="space-y-0.5">
+              {evidence.map((e) => (
+                <li key={`${e.type}-${e.id}-${e.idx}`} className="text-[11px] text-slate-400">
+                  [E{e.idx}] {e.type}
+                  {e.product_slug ? ` · ${e.product_slug}` : ""}
+                  {e.subsystem ? ` · ${e.subsystem}` : ""}
+                  {e.heading ? ` · ${e.heading}` : ""}
+                  {typeof e.score === "number" ? ` · ${e.score.toFixed(2)}` : ""}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </div>
   );
 }
