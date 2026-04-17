@@ -177,31 +177,52 @@ export async function ingestCorrection(
   });
   const snippetEmbedding = await embedSingle(snippetText);
 
-  const snippetUpsert = await supabase
-    .from("learning_snippets")
-    .upsert(
-      {
-        tech_note_id: input.techNoteId ?? null,
-        correction_id: correctionId,
-        snippet_text: snippetText,
-        machine_model: input.machineModel ?? null,
-        machine_serial: input.machineSerial ?? null,
-        issue_tags: tags,
-        product_slug: productSlug,
-        subsystem,
-        symptom_tags: symptomTags,
-        error_codes: errorCodes,
-        embedding: snippetEmbedding,
-        confidence: 0.7,
-        status: "active",
-      },
-      input.techNoteId ? { onConflict: "tech_note_id" } : undefined,
-    )
-    .select("id")
-    .single();
+  // learning_snippets_tech_note_id_key is a PARTIAL unique index
+  // (`where tech_note_id is not null`), which Postgres refuses to match
+  // against ON CONFLICT (tech_note_id). So we do lookup-then-update/insert
+  // instead of upsert.
+  const snippetPayload = {
+    correction_id: correctionId,
+    snippet_text: snippetText,
+    machine_model: input.machineModel ?? null,
+    machine_serial: input.machineSerial ?? null,
+    issue_tags: tags,
+    product_slug: productSlug,
+    subsystem,
+    symptom_tags: symptomTags,
+    error_codes: errorCodes,
+    embedding: snippetEmbedding,
+    confidence: 0.7,
+    status: "active",
+  };
 
-  if (snippetUpsert.error) {
-    throw new Error(snippetUpsert.error.message);
+  let snippetId: string | null = null;
+  if (input.techNoteId) {
+    const existing = await supabase
+      .from("learning_snippets")
+      .select("id")
+      .eq("tech_note_id", input.techNoteId)
+      .maybeSingle();
+    if (existing.error) throw new Error(existing.error.message);
+    if (existing.data?.id) {
+      const upd = await supabase
+        .from("learning_snippets")
+        .update(snippetPayload)
+        .eq("id", existing.data.id)
+        .select("id")
+        .single();
+      if (upd.error) throw new Error(upd.error.message);
+      snippetId = upd.data.id;
+    }
+  }
+  if (!snippetId) {
+    const ins = await supabase
+      .from("learning_snippets")
+      .insert({ tech_note_id: input.techNoteId ?? null, ...snippetPayload })
+      .select("id")
+      .single();
+    if (ins.error) throw new Error(ins.error.message);
+    snippetId = ins.data.id;
   }
 
   // Review queue: always open a row when canonical is in draft, or when a conflict fired.
@@ -253,7 +274,7 @@ export async function ingestCorrection(
   return {
     correctionId,
     conflictId,
-    snippetId: (snippetUpsert.data as any)?.id ?? null,
+    snippetId,
     reviewQueueId,
     canonicalStatus,
   };
