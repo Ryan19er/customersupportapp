@@ -772,24 +772,10 @@ export default function AdminPage() {
     await loadPromptHistory(selectedPromptKey);
   }
 
-  // Quote the selected transcript message into the Teach-the-AI textarea so
-  // the correction is tied to that specific reply. Claude's extraction reads
-  // the QUOTED-MESSAGE block as the thing being corrected; selectedMessageId
-  // is also sent to synthesize so the correction row links back to it.
-  function quoteSelectedMessageIntoCorrection() {
-    if (!selectedMessageId) return;
-    const m = messages.find((x) => x.id === selectedMessageId);
-    if (!m) return;
-    const block =
-      `QUOTED-MESSAGE (${m.role}, ${new Date(m.created_at).toISOString()}):\n` +
-      `"""\n${m.content}\n"""\n` +
-      `CORRECTION: `;
-    setCorrectionDraft((prev) => {
-      if (!prev.trim()) return block;
-      if (prev.includes("QUOTED-MESSAGE")) return prev;
-      return `${block}\n\n${prev}`;
-    });
-  }
+  // We intentionally do NOT paste the selected reply into the textarea.
+  // The box stays clean. When the admin hits "Teach the AI", teachAi()
+  // attaches the quote + message_id in the payload so Claude's extractor
+  // still knows exactly which reply is being corrected.
 
   async function logout() {
     await fetch("/api/admin/logout", { method: "POST" });
@@ -1064,16 +1050,11 @@ export default function AdminPage() {
                         );
                       })}
                     </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={!selectedMessageId}
-                        onClick={quoteSelectedMessageIntoCorrection}
-                        className="rounded-md border border-emerald-800/60 bg-emerald-900/20 px-3 py-2 text-xs font-medium text-emerald-200 disabled:opacity-40"
-                      >
-                        Quote this reply into Teach-the-AI
-                      </button>
-                      {selectedMessageId ? (
+                    {selectedMessageId ? (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span className="rounded-md border border-emerald-800/60 bg-emerald-900/20 px-3 py-2 text-xs text-emerald-200">
+                          Selected — the next correction you publish will be tied to this reply.
+                        </span>
                         <button
                           type="button"
                           onClick={() => setSelectedMessageId(null)}
@@ -1081,8 +1062,8 @@ export default function AdminPage() {
                         >
                           Clear selection
                         </button>
-                      ) : null}
-                    </div>
+                      </div>
+                    ) : null}
                   </div>
                 </section>
 
@@ -1106,22 +1087,13 @@ export default function AdminPage() {
                               <span>
                                 Correcting this {sel.role === "assistant" ? "AI reply" : "message"}
                               </span>
-                              <div className="flex gap-2">
-                                <button
-                                  type="button"
-                                  onClick={quoteSelectedMessageIntoCorrection}
-                                  className="rounded border border-emerald-700/60 px-2 py-0.5 text-[10px] font-medium text-emerald-200"
-                                >
-                                  Quote into box
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setSelectedMessageId(null)}
-                                  className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400"
-                                >
-                                  Unlink
-                                </button>
-                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedMessageId(null)}
+                                className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400"
+                              >
+                                Unlink
+                              </button>
                             </div>
                             <p className="whitespace-pre-wrap text-emerald-100/90">{preview}</p>
                           </div>
