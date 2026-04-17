@@ -544,6 +544,18 @@ export default function AdminPage() {
         role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
         content: m.content,
       }));
+      // If the admin picked a specific reply, pin it into the correction turn
+      // so Claude's extractor knows which message is being fixed. This also
+      // gets logged with message_id below so the correction row is hard-linked.
+      const selected = selectedMessageId
+        ? messages.find((m) => m.id === selectedMessageId) ?? null
+        : null;
+      const adminCorrectionContent = selected
+        ? `ADMIN_CORRECTION from ${createdBy}.\n` +
+          `QUOTED-MESSAGE (${selected.role}, ${new Date(selected.created_at).toISOString()}):\n` +
+          `"""\n${selected.content}\n"""\n` +
+          `CORRECTION: ${msg}`
+        : `ADMIN_CORRECTION from ${createdBy}: ${msg}`;
       const res = await fetch("/api/admin/notes/synthesize", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -555,10 +567,7 @@ export default function AdminPage() {
           created_by: createdBy,
           thread: [
             ...customerTranscript,
-            {
-              role: "user" as const,
-              content: `ADMIN_CORRECTION from ${createdBy}: ${msg}`,
-            },
+            { role: "user" as const, content: adminCorrectionContent },
           ],
         }),
       });
@@ -763,12 +772,23 @@ export default function AdminPage() {
     await loadPromptHistory(selectedPromptKey);
   }
 
-  function prefillNoteFromSelectedMessage() {
+  // Quote the selected transcript message into the Teach-the-AI textarea so
+  // the correction is tied to that specific reply. Claude's extraction reads
+  // the QUOTED-MESSAGE block as the thing being corrected; selectedMessageId
+  // is also sent to synthesize so the correction row links back to it.
+  function quoteSelectedMessageIntoCorrection() {
     if (!selectedMessageId) return;
     const m = messages.find((x) => x.id === selectedMessageId);
     if (!m) return;
-    const quote = `[${m.role} @ ${new Date(m.created_at).toISOString()}]\n${m.content}`;
-    setSymptoms((prev) => (prev.trim() ? `${prev}\n\n---\n${quote}` : `Context from chat:\n${quote}`));
+    const block =
+      `QUOTED-MESSAGE (${m.role}, ${new Date(m.created_at).toISOString()}):\n` +
+      `"""\n${m.content}\n"""\n` +
+      `CORRECTION: `;
+    setCorrectionDraft((prev) => {
+      if (!prev.trim()) return block;
+      if (prev.includes("QUOTED-MESSAGE")) return prev;
+      return `${block}\n\n${prev}`;
+    });
   }
 
   async function logout() {
@@ -1008,8 +1028,9 @@ export default function AdminPage() {
                   <div className="rounded-xl border border-slate-800 bg-slate-900 p-3 lg:col-span-2">
                     <h2 className="mb-2 font-semibold">Transcript</h2>
                     <p className="mb-2 text-xs text-slate-500">
-                      Click a message to link it to a diagnosis note. Use the button below to paste the
-                      selected text into “Symptoms”.
+                      Click a reply the AI got wrong — the selected message turns green and the
+                      next correction you type in &ldquo;Teach the AI&rdquo; below will be tied to
+                      that exact reply.
                     </p>
                     <div className="max-h-[min(480px,55vh)] overflow-auto space-y-2">
                       {!selectedSessionId ? (
@@ -1043,14 +1064,25 @@ export default function AdminPage() {
                         );
                       })}
                     </div>
-                    <button
-                      type="button"
-                      disabled={!selectedMessageId}
-                      onClick={prefillNoteFromSelectedMessage}
-                      className="mt-2 rounded-md border border-emerald-800/60 px-3 py-2 text-xs text-emerald-300 disabled:opacity-40"
-                    >
-                      Add selected message to note (symptoms)
-                    </button>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={!selectedMessageId}
+                        onClick={quoteSelectedMessageIntoCorrection}
+                        className="rounded-md border border-emerald-800/60 bg-emerald-900/20 px-3 py-2 text-xs font-medium text-emerald-200 disabled:opacity-40"
+                      >
+                        Quote this reply into Teach-the-AI
+                      </button>
+                      {selectedMessageId ? (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedMessageId(null)}
+                          className="rounded-md border border-slate-800 px-2 py-2 text-xs text-slate-400"
+                        >
+                          Clear selection
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                 </section>
 
@@ -1061,6 +1093,41 @@ export default function AdminPage() {
                       Type what was really wrong. One button. The AI extracts and publishes.
                     </span>
                   </div>
+
+                  {selectedMessageId
+                    ? (() => {
+                        const sel = messages.find((x) => x.id === selectedMessageId);
+                        if (!sel) return null;
+                        const preview =
+                          sel.content.length > 220 ? `${sel.content.slice(0, 220)}…` : sel.content;
+                        return (
+                          <div className="rounded-md border border-emerald-800/60 bg-emerald-950/30 p-2 text-xs">
+                            <div className="mb-1 flex items-center justify-between text-emerald-300">
+                              <span>
+                                Correcting this {sel.role === "assistant" ? "AI reply" : "message"}
+                              </span>
+                              <div className="flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={quoteSelectedMessageIntoCorrection}
+                                  className="rounded border border-emerald-700/60 px-2 py-0.5 text-[10px] font-medium text-emerald-200"
+                                >
+                                  Quote into box
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedMessageId(null)}
+                                  className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400"
+                                >
+                                  Unlink
+                                </button>
+                              </div>
+                            </div>
+                            <p className="whitespace-pre-wrap text-emerald-100/90">{preview}</p>
+                          </div>
+                        );
+                      })()
+                    : null}
 
                   <textarea
                     value={correctionDraft}
