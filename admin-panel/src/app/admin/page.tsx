@@ -218,7 +218,19 @@ export default function AdminPage() {
       const list = (data.sessions ?? []) as SessionRow[];
       setSessions(list);
       setSessionLoadWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+      // Deep-link support: when we come from the Knowledge dashboard
+      // ("Open chat & correct") we get ?session=<id>, so prefer that.
+      let deepLinked: string | null = null;
+      if (typeof window !== "undefined") {
+        try {
+          const sp = new URLSearchParams(window.location.search);
+          deepLinked = sp.get("session");
+        } catch {
+          deepLinked = null;
+        }
+      }
       setSelectedSessionId((prev) => {
+        if (deepLinked && list.some((s) => s.id === deepLinked)) return deepLinked;
         if (prev && list.some((s) => s.id === prev)) return prev;
         return list[0]?.id ?? null;
       });
