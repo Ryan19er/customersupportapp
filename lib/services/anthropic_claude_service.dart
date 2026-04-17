@@ -1,6 +1,11 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../config/env_config.dart';
 import '../config/stealth_system_prompt.dart';
 
 /// Real [Anthropic Messages API](https://docs.anthropic.com/en/api/messages) client.
@@ -52,6 +57,32 @@ class ClaudeReply {
   final String? resolvedProduct;
   final String? auditId;
 }
+
+/// Event from [AnthropicClaudeService.completeStream].
+/// - `delta` carries incremental text as Claude generates it.
+/// - `done` carries the final accumulated [ClaudeReply] with evidence/meta.
+/// - `error` carries a terminal error message.
+class ClaudeStreamEvent {
+  const ClaudeStreamEvent.delta(this.text)
+      : kind = ClaudeStreamEventKind.delta,
+        reply = null,
+        error = null;
+  const ClaudeStreamEvent.done(this.reply)
+      : kind = ClaudeStreamEventKind.done,
+        text = '',
+        error = null;
+  const ClaudeStreamEvent.error(this.error)
+      : kind = ClaudeStreamEventKind.error,
+        text = '',
+        reply = null;
+
+  final ClaudeStreamEventKind kind;
+  final String text;
+  final ClaudeReply? reply;
+  final String? error;
+}
+
+enum ClaudeStreamEventKind { delta, done, error }
 
 class AnthropicClaudeService {
   AnthropicClaudeService({
@@ -255,6 +286,187 @@ class AnthropicClaudeService {
         'is deployed and `ANTHROPIC_API_KEY` is set in Supabase secrets.',
       );
     }
+  }
+
+  /// Streaming variant of [complete] / [completeDetailed]. Yields incremental
+  /// `delta` events as tokens arrive from Claude, then a final `done` event
+  /// containing the full [ClaudeReply] (evidence + resolved product). This is
+  /// the big UX-latency win: users see the first characters of the answer in
+  /// ~500–800ms instead of waiting 5–10s for the whole reply.
+  ///
+  /// The network plumbing goes straight to the Edge Function URL (instead of
+  /// `functions.invoke`) because the Supabase SDK buffers the full response.
+  Stream<ClaudeStreamEvent> completeStream({
+    required List<ChatTurn> history,
+    required String nextUserMessage,
+    String additionalSystemContext = '',
+    String? systemPromptOverride,
+    String? sessionId,
+    String? sessionChannel,
+    bool includeRuntimeContext = false,
+  }) async* {
+    var merged = _mergeAlternating([
+      ...history,
+      ChatTurn(role: 'user', text: nextUserMessage),
+    ]);
+    while (merged.isNotEmpty && merged.first.role == 'assistant') {
+      merged = merged.sublist(1);
+    }
+
+    final messages = <Map<String, dynamic>>[];
+    for (final turn in merged) {
+      if (turn.role == 'assistant') {
+        messages.add(_assistantMessagePayload(turn.text));
+      } else {
+        messages.add(_userMessagePayload(turn.text));
+      }
+    }
+    if (messages.isEmpty) {
+      messages.add(_userMessagePayload(nextUserMessage.trim()));
+    }
+
+    final base = systemPromptOverride ?? systemPrompt;
+    final system = additionalSystemContext.trim().isEmpty
+        ? base
+        : '$base\n\n${additionalSystemContext.trim()}';
+
+    final url = '${EnvConfig.supabaseUrl}/functions/v1/anthropic-chat';
+    final token =
+        _client.auth.currentSession?.accessToken ?? EnvConfig.supabaseAnonKey;
+    final req = http.Request('POST', Uri.parse(url));
+    req.headers.addAll({
+      'content-type': 'application/json',
+      'accept': 'text/event-stream',
+      'authorization': 'Bearer $token',
+      'apikey': EnvConfig.supabaseAnonKey,
+    });
+    req.body = jsonEncode({
+      'model': model,
+      'max_tokens': maxTokens,
+      'system': system,
+      'messages': messages,
+      'stream': true,
+      'client': kIsWeb ? 'web' : 'native',
+      if (includeRuntimeContext && sessionId != null && sessionChannel != null)
+        'resolver': {
+          'session_id': sessionId,
+          'session_channel': sessionChannel,
+          'include_runtime_context': true,
+        },
+    });
+
+    final client = http.Client();
+    http.StreamedResponse resp;
+    try {
+      resp = await client.send(req);
+    } catch (e) {
+      client.close();
+      yield ClaudeStreamEvent.error(
+        'Could not reach AI service proxy. Ensure Supabase Edge Function '
+        '`anthropic-chat` is deployed and `ANTHROPIC_API_KEY` is set.',
+      );
+      return;
+    }
+
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      final errBody = await resp.stream.bytesToString();
+      client.close();
+      yield ClaudeStreamEvent.error(
+        'Anthropic proxy failed (HTTP ${resp.statusCode}): $errBody',
+      );
+      return;
+    }
+
+    final buffer = StringBuffer();
+    final accText = StringBuffer();
+    ClaudeReply? finalReply;
+    String? streamError;
+
+    try {
+      await for (final chunk
+          in resp.stream.transform(utf8.decoder)) {
+        buffer.write(chunk);
+        while (true) {
+          final raw = buffer.toString();
+          final idx = raw.indexOf('\n\n');
+          if (idx < 0) break;
+          final frame = raw.substring(0, idx);
+          buffer
+            ..clear()
+            ..write(raw.substring(idx + 2));
+
+          String? event;
+          final dataLines = <String>[];
+          for (final line in frame.split('\n')) {
+            if (line.startsWith('event:')) {
+              event = line.substring(6).trim();
+            } else if (line.startsWith('data:')) {
+              dataLines.add(line.substring(5).trim());
+            }
+          }
+          if (dataLines.isEmpty) continue;
+          final payload = dataLines.join('');
+          Map<String, dynamic>? data;
+          try {
+            final decoded = jsonDecode(payload);
+            if (decoded is Map<String, dynamic>) data = decoded;
+          } catch (_) {
+            continue;
+          }
+          if (data == null) continue;
+
+          if (event == 'delta') {
+            final t = data['text'];
+            if (t is String && t.isNotEmpty) {
+              accText.write(t);
+              yield ClaudeStreamEvent.delta(t);
+            }
+          } else if (event == 'done') {
+            final evidenceList = data['evidence'];
+            final List<EvidenceCitation> evidence = [];
+            if (evidenceList is List) {
+              for (final e in evidenceList) {
+                if (e is! Map) continue;
+                evidence.add(EvidenceCitation(
+                  idx: (e['idx'] as num?)?.toInt() ?? evidence.length + 1,
+                  type: e['type']?.toString() ?? 'chunk',
+                  id: e['id']?.toString() ?? '',
+                  heading: e['heading']?.toString(),
+                  productSlug: e['product_slug']?.toString(),
+                  subsystem: e['subsystem']?.toString(),
+                  score: (e['score'] as num?)?.toDouble() ?? 0.0,
+                ));
+              }
+            }
+            final meta = data['resolver_meta'];
+            final resolved =
+                (meta is Map) ? meta['product_slug']?.toString() : null;
+            final auditId =
+                (meta is Map) ? meta['audit_id']?.toString() : null;
+            finalReply = ClaudeReply(
+              text: accText.toString(),
+              evidence: evidence,
+              resolvedProduct: resolved,
+              auditId: auditId,
+            );
+          } else if (event == 'error') {
+            streamError = data['message']?.toString() ?? 'Unknown stream error';
+          }
+        }
+      }
+    } catch (e) {
+      streamError = e.toString();
+    } finally {
+      client.close();
+    }
+
+    if (streamError != null && accText.isEmpty) {
+      yield ClaudeStreamEvent.error(streamError);
+      return;
+    }
+    yield ClaudeStreamEvent.done(
+      finalReply ?? ClaudeReply(text: accText.toString()),
+    );
   }
 
   void dispose() {}

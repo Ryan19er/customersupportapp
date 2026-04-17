@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' show ClientException;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -101,21 +102,28 @@ class _PreAuthChatScreenState extends State<PreAuthChatScreen> {
       ),
     );
 
-    return TextField(
-      key: const ValueKey('pre_auth_composer_open'),
-      controller: _input,
-      focusNode: _inputFocus,
-      autofocus: true,
-      minLines: 1,
-      maxLines: 5,
-      keyboardType: _step == _Step.needEmail
-          ? TextInputType.emailAddress
-          : _step == _Step.needPhone
-              ? TextInputType.phone
-              : TextInputType.text,
-      style: const TextStyle(color: StealthColors.mist),
-      decoration: decoration,
-      onSubmitted: (_) => _handleSend(),
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.enter): _handleSend,
+        const SingleActivator(LogicalKeyboardKey.numpadEnter): _handleSend,
+      },
+      child: TextField(
+        key: const ValueKey('pre_auth_composer_open'),
+        controller: _input,
+        focusNode: _inputFocus,
+        autofocus: true,
+        minLines: 1,
+        maxLines: 5,
+        textInputAction: TextInputAction.send,
+        keyboardType: _step == _Step.needEmail
+            ? TextInputType.emailAddress
+            : _step == _Step.needPhone
+                ? TextInputType.phone
+                : TextInputType.text,
+        style: const TextStyle(color: StealthColors.mist),
+        decoration: decoration,
+        onSubmitted: (_) => _handleSend(),
+      ),
     );
   }
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config/env_config.dart';
@@ -42,6 +43,9 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _loadingThread = true;
   bool _sending = false;
   String? _error;
+  // Live streaming buffer: shown in place of the "typing..." bubble so the
+  // user sees the reply being written in real-time (~500ms to first token).
+  String _streamingAssistant = '';
   // Evidence for the most-recent assistant reply, rendered as an accordion.
   List<EvidenceCitation> _lastEvidence = const [];
   String? _lastResolvedProduct;
@@ -109,6 +113,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
     setState(() {
       _sending = true;
+      _streamingAssistant = '';
       _error = null;
     });
     _input.clear();
@@ -125,15 +130,33 @@ class _ChatScreenState extends State<ChatScreen> {
                 (m) => ChatTurn(role: m.role, text: m.content),
               )
               .toList();
-          lastReply = await _claude.completeDetailed(
+          // Consume the SSE stream: update the UI buffer for every delta so
+          // the user sees tokens appear as Claude produces them. The final
+          // `done` event carries the accumulated text + evidence metadata.
+          final buf = StringBuffer();
+          await for (final evt in _claude.completeStream(
             history: history,
             nextUserMessage: userMsg,
             additionalSystemContext: widget.profile.anthropicContextBlock,
             sessionId: _sessionId,
             sessionChannel: widget.repository.sessionChannel,
             includeRuntimeContext: true,
-          );
-          return lastReply!.text;
+          )) {
+            switch (evt.kind) {
+              case ClaudeStreamEventKind.delta:
+                buf.write(evt.text);
+                if (!mounted) break;
+                setState(() => _streamingAssistant = buf.toString());
+                _scrollToEnd();
+                break;
+              case ClaudeStreamEventKind.done:
+                lastReply = evt.reply;
+                break;
+              case ClaudeStreamEventKind.error:
+                throw Exception(evt.error ?? 'Stream failed');
+            }
+          }
+          return (lastReply?.text ?? buf.toString()).trim();
         },
       );
       if (lastReply != null) {
@@ -141,17 +164,18 @@ class _ChatScreenState extends State<ChatScreen> {
         _lastResolvedProduct = lastReply!.resolvedProduct;
       }
       final fresh = await widget.repository.loadMessages(_sessionId!);
-      final elapsed = DateTime.now().difference(startedAt);
-      const minThinking = Duration(milliseconds: 700);
-      if (elapsed < minThinking) {
-        await Future<void>.delayed(minThinking - elapsed);
-      }
       if (!mounted) return;
-      setState(() => _messages = fresh);
+      setState(() {
+        _messages = fresh;
+        _streamingAssistant = '';
+      });
       _scrollToEnd();
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = e.toString());
+      setState(() {
+        _error = e.toString();
+        _streamingAssistant = '';
+      });
     } finally {
       if (mounted) setState(() => _sending = false);
       _refocusInput();
@@ -221,6 +245,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 itemCount: _messages.length + (_sending ? 1 : 0),
                 itemBuilder: (context, i) {
                   if (_sending && i == _messages.length) {
+                    final streaming = _streamingAssistant.isNotEmpty;
                     return Align(
                       alignment: Alignment.centerLeft,
                       child: Container(
@@ -243,10 +268,15 @@ class _ChatScreenState extends State<ChatScreen> {
                           ],
                         ),
                         child: Text(
-                          'Stealth Support is typing...',
+                          streaming
+                              ? _streamingAssistant
+                              : 'Stealth Support is typing...',
                           style: TextStyle(
-                            color: StealthColors.mist.withValues(alpha: 0.9),
-                            fontStyle: FontStyle.italic,
+                            color: StealthColors.mist.withValues(
+                              alpha: streaming ? 0.95 : 0.9,
+                            ),
+                            fontStyle:
+                                streaming ? FontStyle.normal : FontStyle.italic,
                             height: 1.35,
                           ),
                         ),
@@ -308,15 +338,28 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Row(
                   children: [
                     Expanded(
+                      // Plain Enter = send. Shift+Enter inserts a newline.
+                      // Needed because Flutter Web treats Enter in a multi-
+                      // line TextField as a newline by default.
+                      child: CallbackShortcuts(
+                        bindings: <ShortcutActivator, VoidCallback>{
+                          const SingleActivator(LogicalKeyboardKey.enter): () {
+                            if (!_sending) _send();
+                          },
+                          const SingleActivator(LogicalKeyboardKey.numpadEnter): () {
+                            if (!_sending) _send();
+                          },
+                        },
                       child: TextField(
                         controller: _input,
                         focusNode: _inputFocus,
                         autofocus: true,
                         minLines: 1,
                         maxLines: 5,
+                        textInputAction: TextInputAction.send,
                         style: const TextStyle(color: StealthColors.mist),
                         decoration: InputDecoration(
-                          hintText: _sending ? 'Waiting for Claude…' : 'Ask about your Stealth machine…',
+                          hintText: _sending ? 'Waiting for Claude…' : 'Ask about your Stealth machine… (Enter to send, Shift+Enter for newline)',
                           hintStyle: TextStyle(
                             color: StealthColors.mist.withValues(alpha: 0.45),
                           ),
@@ -334,6 +377,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           ),
                         ),
                         onSubmitted: (_) => _send(),
+                      ),
                       ),
                     ),
                     const SizedBox(width: 8),
