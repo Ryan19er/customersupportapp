@@ -1254,3 +1254,24 @@ $$;
 
 grant execute on function public.retrieve_knowledge(vector(384), text, text, text[], text[], integer)
   to anon, authenticated, service_role;
+
+-- =============================================================================
+-- 016_document_file_urls.sql — customer-facing download links in chat.
+-- Adds file_url + display_title so the bot can offer tap-to-open manuals
+-- directly in the conversation (replacing the old Guides/Training tabs).
+-- =============================================================================
+alter table public.knowledge_documents
+  add column if not exists file_url text;
+
+alter table public.knowledge_documents
+  add column if not exists display_title text;
+
+create index if not exists knowledge_documents_file_url_idx
+  on public.knowledge_documents (id)
+  where file_url is not null;
+
+comment on column public.knowledge_documents.file_url is
+  'Public or signed HTTPS URL served to customers as a download link in chat.';
+
+comment on column public.knowledge_documents.display_title is
+  'Optional human-friendly title shown alongside the download link.';

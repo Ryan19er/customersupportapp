@@ -43,6 +43,11 @@ type EvidenceRow = {
   error_codes: string[];
   score: number;
   scores: { vector: number; lexical: number; tag: number };
+  // Populated by enrichEvidenceWithDocuments() when the evidence points at a
+  // public/signed document URL. The chat bot surfaces this as a tap-to-open
+  // download link in the customer's reply.
+  document_title?: string | null;
+  file_url?: string | null;
 };
 
 const ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages";
@@ -163,10 +168,71 @@ function renderEvidenceBlock(rows: EvidenceRow[]): string {
       (r.subsystem ? ` subsystem=${r.subsystem}` : "") +
       (r.heading ? ` · ${r.heading}` : "");
     lines.push(header);
+    if (r.file_url) {
+      const title = r.document_title ?? r.heading ?? "document";
+      lines.push(`DOWNLOAD: [${title}](${r.file_url})`);
+    }
     lines.push(r.text.slice(0, EVIDENCE_CHUNK_CHARS));
     lines.push("");
   }
   return lines.join("\n").trim();
+}
+
+/// Renders a compact list of all distinct downloadable docs that backed the
+/// answer. The customer-facing prompt tells Claude to offer these as tappable
+/// links at the end of its reply so users can open manuals on their phone
+/// instead of hunting through a separate tab.
+function renderDownloadsBlock(rows: EvidenceRow[]): string {
+  const seen = new Set<string>();
+  const items: string[] = [];
+  for (const r of rows) {
+    if (!r.file_url) continue;
+    if (seen.has(r.file_url)) continue;
+    seen.add(r.file_url);
+    const title = r.document_title ?? r.heading ?? "Document";
+    items.push(`- [${title}](${r.file_url})`);
+  }
+  if (!items.length) return "";
+  return [
+    "### AVAILABLE DOWNLOADS",
+    "When one of these is relevant to the customer's question, offer it at the",
+    "end of your reply as a tappable markdown link. Example:",
+    "  You can download the full manual here: [SS3015CP Operator Manual](https://...)",
+    "Only surface a link when it actually helps the customer's current issue.",
+    ...items,
+  ].join("\n");
+}
+
+/// Loads `knowledge_documents.display_title` + `file_url` for every unique
+/// document_id referenced by the retrieved chunks, in one round-trip. Keeps
+/// the per-turn latency flat even with many chunks.
+async function enrichEvidenceWithDocuments(
+  db: ReturnType<typeof createClient>,
+  rows: EvidenceRow[],
+): Promise<void> {
+  const ids = Array.from(
+    new Set(rows.map((r) => r.document_id).filter((x): x is string => !!x)),
+  );
+  if (!ids.length) return;
+  const { data, error } = await db
+    .from("knowledge_documents")
+    .select("id, title, display_title, file_url")
+    .in("id", ids);
+  if (error || !data) return;
+  const byId = new Map<string, { title: string | null; file_url: string | null }>();
+  for (const d of data as any[]) {
+    byId.set(d.id, {
+      title: d.display_title ?? d.title ?? null,
+      file_url: d.file_url ?? null,
+    });
+  }
+  for (const r of rows) {
+    if (!r.document_id) continue;
+    const meta = byId.get(r.document_id);
+    if (!meta) continue;
+    r.document_title = meta.title;
+    r.file_url = meta.file_url;
+  }
 }
 
 async function writeAnswerAudit(params: {
@@ -379,6 +445,9 @@ Deno.serve(async (req) => {
           tag: Number(r.tag_score ?? 0),
         },
       }));
+      // One batched lookup to attach document title + file_url (if present)
+      // so the bot can offer downloads inline.
+      await enrichEvidenceWithDocuments(db, evidence);
     }
   }
 
@@ -402,6 +471,7 @@ Deno.serve(async (req) => {
       : "");
 
   const evidenceBlock = ragInjectIntoPrompt ? renderEvidenceBlock(evidence) : "";
+  const downloadsBlock = ragInjectIntoPrompt ? renderDownloadsBlock(evidence) : "";
 
   const runtimeAddon = [
     activePromptRow?.markdown_content ?? "",
@@ -409,6 +479,7 @@ Deno.serve(async (req) => {
     resolverBlock,
     canonicalBlock,
     evidenceBlock,
+    downloadsBlock,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -474,6 +545,8 @@ Deno.serve(async (req) => {
     product_slug: e.product_slug,
     subsystem: e.subsystem,
     score: e.score,
+    document_title: e.document_title ?? null,
+    file_url: e.file_url ?? null,
   }));
 
   // --- Non-streaming path (backward compat) ------------------------------

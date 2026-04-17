@@ -1,6 +1,8 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../config/env_config.dart';
 import '../models/customer_profile.dart';
@@ -267,19 +269,20 @@ class _ChatScreenState extends State<ChatScreen> {
                             ),
                           ],
                         ),
-                        child: Text(
-                          streaming
-                              ? _streamingAssistant
-                              : 'Stealth Support is typing...',
-                          style: TextStyle(
-                            color: StealthColors.mist.withValues(
-                              alpha: streaming ? 0.95 : 0.9,
-                            ),
-                            fontStyle:
-                                streaming ? FontStyle.normal : FontStyle.italic,
-                            height: 1.35,
-                          ),
-                        ),
+                        child: streaming
+                            ? _AssistantRichText(
+                                text: _streamingAssistant,
+                                color: StealthColors.mist.withValues(alpha: 0.95),
+                              )
+                            : Text(
+                                'Stealth Support is typing...',
+                                style: TextStyle(
+                                  color:
+                                      StealthColors.mist.withValues(alpha: 0.9),
+                                  fontStyle: FontStyle.italic,
+                                  height: 1.35,
+                                ),
+                              ),
                       ),
                     );
                   }
@@ -309,18 +312,24 @@ class _ChatScreenState extends State<ChatScreen> {
                           ),
                         ],
                       ),
-                      child: SelectableText(
-                        m.content,
-                        style: TextStyle(
-                          color: user ? Colors.white : StealthColors.mist.withValues(alpha: 0.95),
-                          height: 1.35,
-                        ),
-                        contextMenuBuilder: (context, editableTextState) {
-                          return AdaptiveTextSelectionToolbar.editableText(
-                            editableTextState: editableTextState,
-                          );
-                        },
-                      ),
+                      child: user
+                          ? SelectableText(
+                              m.content,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                height: 1.35,
+                              ),
+                              contextMenuBuilder: (context, editableTextState) {
+                                return AdaptiveTextSelectionToolbar.editableText(
+                                  editableTextState: editableTextState,
+                                );
+                              },
+                            )
+                          : _AssistantRichText(
+                              text: m.content,
+                              color: StealthColors.mist
+                                  .withValues(alpha: 0.95),
+                            ),
                     ),
                   );
                 },
@@ -489,6 +498,124 @@ class _SourcesAccordionState extends State<_SourcesAccordion> {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// Renders assistant text with tappable links. Recognizes two patterns:
+///   1. Markdown links: [visible title](https://example.com/file.pdf)
+///   2. Bare URLs:      https://example.com/file.pdf
+/// Every other character is rendered as-is. Used for both streamed and
+/// stored assistant bubbles so customers can tap on a manual link and open
+/// it directly on their phone (replaces the old Guides/Training tabs).
+class _AssistantRichText extends StatefulWidget {
+  const _AssistantRichText({required this.text, required this.color});
+  final String text;
+  final Color color;
+
+  @override
+  State<_AssistantRichText> createState() => _AssistantRichTextState();
+}
+
+class _AssistantRichTextState extends State<_AssistantRichText> {
+  final List<TapGestureRecognizer> _recognizers = [];
+
+  @override
+  void dispose() {
+    for (final r in _recognizers) {
+      r.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _open(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  // Markdown link: [title](url). Only accepts http(s) URLs so we don't
+  // launch arbitrary schemes from AI output.
+  static final _mdLink = RegExp(
+    r'\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)',
+  );
+  // Bare URL: http(s)://...   — stops at whitespace / markdown-closing chars.
+  static final _bareUrl = RegExp(r'(https?:\/\/[^\s)\]\}]+)');
+
+  List<TextSpan> _buildSpans(TextStyle baseStyle, TextStyle linkStyle) {
+    for (final r in _recognizers) {
+      r.dispose();
+    }
+    _recognizers.clear();
+
+    final spans = <TextSpan>[];
+    final text = widget.text;
+    if (text.isEmpty) return spans;
+
+    // Pass 1: markdown links. Anything between matches is passed to pass 2.
+    int cursor = 0;
+    final mdMatches = _mdLink.allMatches(text).toList();
+    for (final m in mdMatches) {
+      if (m.start > cursor) {
+        spans.addAll(_splitBareUrls(text.substring(cursor, m.start), baseStyle, linkStyle));
+      }
+      final label = m.group(1)!;
+      final url = m.group(2)!;
+      final recognizer = TapGestureRecognizer()..onTap = () => _open(url);
+      _recognizers.add(recognizer);
+      spans.add(TextSpan(text: label, style: linkStyle, recognizer: recognizer));
+      cursor = m.end;
+    }
+    if (cursor < text.length) {
+      spans.addAll(_splitBareUrls(text.substring(cursor), baseStyle, linkStyle));
+    }
+    return spans;
+  }
+
+  List<TextSpan> _splitBareUrls(
+    String input,
+    TextStyle baseStyle,
+    TextStyle linkStyle,
+  ) {
+    final out = <TextSpan>[];
+    int cursor = 0;
+    for (final m in _bareUrl.allMatches(input)) {
+      if (m.start > cursor) {
+        out.add(TextSpan(text: input.substring(cursor, m.start), style: baseStyle));
+      }
+      final url = m.group(1)!;
+      final recognizer = TapGestureRecognizer()..onTap = () => _open(url);
+      _recognizers.add(recognizer);
+      out.add(TextSpan(text: url, style: linkStyle, recognizer: recognizer));
+      cursor = m.end;
+    }
+    if (cursor < input.length) {
+      out.add(TextSpan(text: input.substring(cursor), style: baseStyle));
+    }
+    return out;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final baseStyle = TextStyle(color: widget.color, height: 1.35);
+    final linkStyle = TextStyle(
+      color: StealthColors.crimson,
+      height: 1.35,
+      decoration: TextDecoration.underline,
+      decorationColor: StealthColors.crimson,
+      fontWeight: FontWeight.w600,
+    );
+    final spans = _buildSpans(baseStyle, linkStyle);
+    if (spans.isEmpty) {
+      return Text(widget.text, style: baseStyle);
+    }
+    return SelectableText.rich(
+      TextSpan(style: baseStyle, children: spans),
+      contextMenuBuilder: (context, editableTextState) {
+        return AdaptiveTextSelectionToolbar.editableText(
+          editableTextState: editableTextState,
+        );
+      },
     );
   }
 }
