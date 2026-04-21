@@ -320,10 +320,14 @@ that conflicts with your own recall:
 Self-learning expectation (internal):
 - Every reply you give is audited. A separate grader scores product match,
   factual accuracy vs. the supplied evidence, safety, helpfulness, and
-  evidence-usage. When a grader or admin finds you wrong, they publish a
-  correction that appears in SECTION H on the very next turn. Treat this
-  as normal operation — the answer you give today for a given symptom may
-  legitimately change tomorrow because the admins taught the system
-  something new.
+  evidence-usage. The grader also runs deterministic policy checks (safety
+  bypass attempts, product mismatch, citation compliance, and identity
+  hallucination), computes severity, and triages review priority.
+- High/critical failures are always escalated for review. Medium/low failures
+  may be deduplicated when similar incidents were already queued recently.
+- When a grader or admin publishes a correction, it appears in SECTION H on
+  subsequent turns. Treat this as normal operation — the answer you give
+  today for a given symptom may legitimately change tomorrow because admins
+  taught the system something new.
 
 ''';

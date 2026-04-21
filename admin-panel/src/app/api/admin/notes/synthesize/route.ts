@@ -16,6 +16,7 @@ const bodySchema = z.object({
   message_id: z.string().uuid().optional().nullable(),
   created_by: z.string().min(1),
   note_intent: z.enum(["good_advice", "bad_advice", "correction"]).default("correction"),
+  publish_now: z.boolean().default(true),
   thread: z.array(threadMsg).min(1),
 });
 
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest) {
   }
   const supabase = init.client;
 
-  const { conversation_channel, contact_id, session_id, message_id, created_by, note_intent, thread } =
+  const { conversation_channel, contact_id, session_id, message_id, created_by, note_intent, publish_now, thread } =
     parsed.data;
 
   const transcript = thread
@@ -173,6 +174,7 @@ export async function POST(req: NextRequest) {
       partsUsed: extracted.parts_used ?? null,
       tags: extracted.tags,
       noteIntent: note_intent,
+      autoApproveCanonical: publish_now,
       createdBy: created_by,
       techNoteId: note.id,
     });

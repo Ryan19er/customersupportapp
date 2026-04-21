@@ -19,6 +19,7 @@ const noteSchema = z.object({
   tags: z.array(z.string()).default([]),
   prior_assistant_summary: z.string().optional().nullable(),
   note_intent: z.enum(["good_advice", "bad_advice", "correction"]).default("correction"),
+  publish_now: z.boolean().default(true),
 });
 
 export async function GET(req: NextRequest) {
@@ -106,6 +107,7 @@ export async function POST(req: NextRequest) {
       partsUsed: payload.parts_used ?? null,
       tags: payload.tags,
       noteIntent: payload.note_intent,
+      autoApproveCanonical: payload.publish_now,
       createdBy: payload.created_by,
       techNoteId: note.id,
     });

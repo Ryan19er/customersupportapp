@@ -132,6 +132,9 @@ export default function AdminPage() {
   const [lastCorrectionId, setLastCorrectionId] = useState<string | null>(null);
   const [verifyBusy, setVerifyBusy] = useState(false);
   const [verifyAnswer, setVerifyAnswer] = useState<string | null>(null);
+  const [ownerChatInput, setOwnerChatInput] = useState("");
+  const [ownerChatBusy, setOwnerChatBusy] = useState(false);
+  const [ownerChatLog, setOwnerChatLog] = useState<TrainingChatMsg[]>([]);
 
   const [trainingInput, setTrainingInput] = useState("");
   const [trainingBusy, setTrainingBusy] = useState(false);
@@ -484,6 +487,7 @@ export default function AdminPage() {
             .filter(Boolean),
           prior_assistant_summary: priorAssistantSummary.trim() || null,
           note_intent: noteIntent,
+          publish_now: true,
         }),
       });
       const { parsed, data } = await readJsonBody<{
@@ -535,14 +539,8 @@ export default function AdminPage() {
     }
   }
 
-  // One-shot: admin types correction -> we ship the customer transcript plus
-  // that correction straight into /api/admin/notes/synthesize. No back-and-
-  // forth, no second button. Claude extracts all fields and ingests; we then
-  // offer a single "Test the fix" action that re-asks the customer's original
-  // question so the admin can verify the AI responds with the new answer.
-  async function teachAi() {
-    const msg = correctionDraft.trim();
-    if (!msg || !activeSession) return;
+  async function applyOwnerCorrection(msg: string): Promise<boolean> {
+    if (!msg.trim() || !activeSession) return false;
     setCorrectionBusy(true);
     setNoteBusy(true);
     setNoteStatus("Teaching the AI…");
@@ -563,8 +561,8 @@ export default function AdminPage() {
         ? `ADMIN_CORRECTION from ${createdBy}.\n` +
           `QUOTED-MESSAGE (${selected.role}, ${new Date(selected.created_at).toISOString()}):\n` +
           `"""\n${selected.content}\n"""\n` +
-          `CORRECTION: ${msg}`
-        : `ADMIN_CORRECTION from ${createdBy}: ${msg}`;
+          `CORRECTION: ${msg.trim()}`
+        : `ADMIN_CORRECTION from ${createdBy}: ${msg.trim()}`;
       const res = await fetch("/api/admin/notes/synthesize", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -575,6 +573,7 @@ export default function AdminPage() {
           message_id: selectedMessageId,
           created_by: createdBy,
           note_intent: noteIntent,
+          publish_now: true,
           thread: [
             ...customerTranscript,
             { role: "user" as const, content: adminCorrectionContent },
@@ -592,15 +591,14 @@ export default function AdminPage() {
       }>(res);
       if (!parsed || !data) {
         setNoteStatus(`Failed (HTTP ${res.status})`);
-        return;
+        return false;
       }
       if (!res.ok) {
         setNoteStatus(data.error ?? "Failed to teach the AI");
-        return;
+        return false;
       }
       const correctionId = data.ingestion?.correctionId ?? null;
       setLastCorrectionId(correctionId);
-      setCorrectionDraft("");
       const parts: string[] = [];
       parts.push("Applied. The AI will use this on the next customer turn.");
       if (noteIntent === "good_advice") {
@@ -611,15 +609,74 @@ export default function AdminPage() {
       if (data.ingestion?.canonicalStatus === "draft" && data.ingestion?.reviewQueueId) {
         parts.push(`(Queued as canonical rule ${data.ingestion.reviewQueueId} for review.)`);
       } else if (data.ingestion?.canonicalStatus === "active") {
-        parts.push("(Canonical rule is live.)");
+        parts.push("(Canonical rule is live immediately.)");
       }
       if (data.ingestion?.conflictId) {
         parts.push(`Conflict flagged ${data.ingestion.conflictId} for review.`);
       }
       setNoteStatus(parts.join(" "));
+      return true;
     } finally {
       setCorrectionBusy(false);
       setNoteBusy(false);
+    }
+  }
+
+  // One-shot: admin types correction -> synthesize + ingest + publish now.
+  async function teachAi() {
+    const msg = correctionDraft.trim();
+    if (!msg) return;
+    const ok = await applyOwnerCorrection(msg);
+    if (ok) setCorrectionDraft("");
+  }
+
+  // Owner training chat in the same conversations workflow:
+  // every owner instruction is auto-saved into live memory immediately.
+  async function sendOwnerTrainingChat() {
+    const msg = ownerChatInput.trim();
+    if (!msg || !activeSession || ownerChatBusy) return;
+    setOwnerChatInput("");
+    setOwnerChatBusy(true);
+    setOwnerChatLog((prev) => [...prev, { role: "owner", content: msg }]);
+    try {
+      const saved = await applyOwnerCorrection(msg);
+      if (!saved) {
+        setOwnerChatLog((prev) => [
+          ...prev,
+          { role: "assistant", content: "Could not save this instruction to live memory." },
+        ]);
+        return;
+      }
+      const res = await fetch("/api/admin/conversation-notes-chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          message: msg,
+          created_by: createdBy,
+          thread: ownerChatLog
+            .slice(-12)
+            .map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
+          context: {
+            sessionLabel:
+              activeSession.chat_contacts?.full_name ??
+              activeSession.chat_contacts?.email ??
+              activeSession.title ??
+              activeSession.id,
+            transcriptTail: messages
+              .slice(-12)
+              .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+              .join("\n"),
+          },
+        }),
+      });
+      const { parsed, data } = await readJsonBody<{ reply?: string; error?: string }>(res);
+      const reply =
+        parsed && data && res.ok && data.reply
+          ? data.reply
+          : data?.error ?? `Owner training chat failed (HTTP ${res.status})`;
+      setOwnerChatLog((prev) => [...prev, { role: "assistant", content: reply }]);
+    } finally {
+      setOwnerChatBusy(false);
     }
   }
 
@@ -1195,6 +1252,49 @@ export default function AdminPage() {
                       ) : null}
                     </div>
                   ) : null}
+                </section>
+
+                <section className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h2 className="font-semibold">Owner live training chat</h2>
+                    <span className="text-[11px] text-slate-500">
+                      Every owner message auto-saves to live memory immediately.
+                    </span>
+                  </div>
+                  <div className="max-h-56 overflow-auto rounded border border-slate-800 bg-slate-950 p-2 space-y-2">
+                    {ownerChatLog.length === 0 ? (
+                      <p className="text-xs text-slate-500">
+                        Start typing corrections/instructions here. Each send is persisted through the same
+                        correction pipeline used by Teach the AI.
+                      </p>
+                    ) : null}
+                    {ownerChatLog.map((m, i) => (
+                      <div
+                        key={`${m.role}-${i}-${m.content.slice(0, 24)}`}
+                        className="rounded border border-slate-800 bg-slate-900 px-3 py-2 text-sm"
+                      >
+                        <p className="text-[10px] uppercase tracking-wide text-slate-500">{m.role}</p>
+                        <p className="whitespace-pre-wrap text-slate-200">{m.content}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <textarea
+                      value={ownerChatInput}
+                      onChange={(e) => setOwnerChatInput(e.target.value)}
+                      rows={3}
+                      className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                      placeholder="Owner instruction: this will auto-save to live memory and train immediately..."
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void sendOwnerTrainingChat()}
+                      disabled={ownerChatBusy || !activeSession || !ownerChatInput.trim()}
+                      className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium disabled:opacity-50"
+                    >
+                      {ownerChatBusy ? "Saving…" : "Send"}
+                    </button>
+                  </div>
                 </section>
               </>
             ) : null}

@@ -42,6 +42,9 @@ class _ChatScreenState extends State<ChatScreen> {
   final _scroll = ScrollController();
   String? _sessionId;
   List<StoredChatMessage> _messages = [];
+  // Keep historical messages in storage for AI context, but do not render
+  // the full prior transcript for returning users.
+  int _displayStartIndex = 0;
   bool _loadingThread = true;
   bool _sending = false;
   String? _error;
@@ -88,7 +91,8 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       setState(() {
         _sessionId = sid;
-        _messages = msgs;
+        _displayStartIndex = msgs.length;
+        _messages = const [];
         _loadingThread = false;
       });
       _scrollToEnd();
@@ -166,9 +170,10 @@ class _ChatScreenState extends State<ChatScreen> {
         _lastResolvedProduct = lastReply!.resolvedProduct;
       }
       final fresh = await widget.repository.loadMessages(_sessionId!);
+      final start = _displayStartIndex.clamp(0, fresh.length);
       if (!mounted) return;
       setState(() {
-        _messages = fresh;
+        _messages = fresh.sublist(start);
         _streamingAssistant = '';
       });
       _scrollToEnd();
