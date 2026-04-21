@@ -418,10 +418,17 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    IconButton(
+                    OutlinedButton.icon(
                       onPressed: _sending ? null : _pickAndAttachImage,
-                      icon: const Icon(Icons.add_photo_alternate_outlined),
-                      tooltip: 'Attach image',
+                      icon: const Icon(Icons.add_photo_alternate_outlined, size: 18),
+                      label: const Text('Upload image'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: StealthColors.mist,
+                        side: BorderSide(
+                          color: StealthColors.mist.withValues(alpha: 0.3),
+                        ),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                      ),
                     ),
                     FilledButton(
                       onPressed: _sending ? null : _send,
@@ -446,16 +453,40 @@ class _ChatScreenState extends State<ChatScreen> {
             if (_pendingImageUrls.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                child: Wrap(
-                  spacing: 6,
-                  children: _pendingImageUrls
-                      .map(
-                        (u) => Chip(
-                          label: const Text('image'),
-                          onDeleted: () => setState(() => _pendingImageUrls.remove(u)),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: StealthColors.panelBlack.withValues(alpha: 0.6),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: StealthColors.mist.withValues(alpha: 0.15),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${_pendingImageUrls.length} image(s) attached for diagnosis',
+                        style: TextStyle(
+                          color: StealthColors.mist.withValues(alpha: 0.85),
+                          fontSize: 12,
                         ),
-                      )
-                      .toList(),
+                      ),
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 6,
+                        children: _pendingImageUrls
+                            .map(
+                              (u) => Chip(
+                                label: const Text('image'),
+                                onDeleted: () => setState(() => _pendingImageUrls.remove(u)),
+                              ),
+                            )
+                            .toList(),
+                      ),
+                    ],
+                  ),
                 ),
               ),
           ],
