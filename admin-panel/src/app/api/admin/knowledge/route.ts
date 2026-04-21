@@ -25,7 +25,7 @@ export async function GET(_req: NextRequest) {
       .eq("status", "pending"),
     supabase
       .from("answer_grades")
-      .select("overall, auto_flagged")
+      .select("overall, auto_flagged, severity, reason_code")
       .order("created_at", { ascending: false })
       .limit(200),
   ]);
@@ -47,6 +47,14 @@ export async function GET(_req: NextRequest) {
     gradeRows.length > 0
       ? Math.round((gradeRows.filter((r) => r.auto_flagged).length / gradeRows.length) * 100)
       : 0;
+  const severityCounts: Record<string, number> = {};
+  const reasonCodeCounts: Record<string, number> = {};
+  for (const r of gradeRows) {
+    const sev = String((r as any).severity ?? "unknown");
+    severityCounts[sev] = (severityCounts[sev] ?? 0) + 1;
+    const rc = String((r as any).reason_code ?? "unspecified");
+    reasonCodeCounts[rc] = (reasonCodeCounts[rc] ?? 0) + 1;
+  }
 
   return NextResponse.json({
     documents: docsCount.count ?? 0,
@@ -54,6 +62,8 @@ export async function GET(_req: NextRequest) {
     pending_review: pendingQueue.count ?? 0,
     avg_grade_last_200: avgOverall,
     flagged_pct_last_200: flaggedShare,
+    severity_counts_last_200: severityCounts,
+    reason_code_counts_last_200: reasonCodeCounts,
     per_product: perProductCounts,
     recent_documents: lastDoc.data ?? [],
   });

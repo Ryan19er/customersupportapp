@@ -102,6 +102,8 @@ type TrainingChatMsg = {
   content: string;
 };
 
+type NoteIntent = "good_advice" | "bad_advice" | "correction";
+
 export default function AdminPage() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
@@ -120,6 +122,7 @@ export default function AdminPage() {
   const [machineSerial, setMachineSerial] = useState("");
   const [tags, setTags] = useState("");
   const [priorAssistantSummary, setPriorAssistantSummary] = useState("");
+  const [noteIntent, setNoteIntent] = useState<NoteIntent>("correction");
 
   // One-shot correction flow: admin types what was really wrong, hits the
   // single button, Claude extracts structured fields, we ingest, done.
@@ -480,6 +483,7 @@ export default function AdminPage() {
             .map((t) => t.trim())
             .filter(Boolean),
           prior_assistant_summary: priorAssistantSummary.trim() || null,
+          note_intent: noteIntent,
         }),
       });
       const { parsed, data } = await readJsonBody<{
@@ -512,6 +516,11 @@ export default function AdminPage() {
         parts.push("Canonical rule is live.");
       }
       if (conflictId) parts.push(`Conflict flagged (${conflictId}).`);
+      if (noteIntent === "good_advice") {
+        parts.push("Tagged as good advice.");
+      } else {
+        parts.push("Tagged as correction override.");
+      }
       setNoteStatus(parts.join(" "));
       setSymptoms("");
       setRootCause("");
@@ -565,6 +574,7 @@ export default function AdminPage() {
           session_id: activeSession.id,
           message_id: selectedMessageId,
           created_by: createdBy,
+          note_intent: noteIntent,
           thread: [
             ...customerTranscript,
             { role: "user" as const, content: adminCorrectionContent },
@@ -593,6 +603,11 @@ export default function AdminPage() {
       setCorrectionDraft("");
       const parts: string[] = [];
       parts.push("Applied. The AI will use this on the next customer turn.");
+      if (noteIntent === "good_advice") {
+        parts.push("(Intent: good advice.)");
+      } else {
+        parts.push("(Intent: correction override.)");
+      }
       if (data.ingestion?.canonicalStatus === "draft" && data.ingestion?.reviewQueueId) {
         parts.push(`(Queued as canonical rule ${data.ingestion.reviewQueueId} for review.)`);
       } else if (data.ingestion?.canonicalStatus === "active") {
@@ -1116,6 +1131,19 @@ export default function AdminPage() {
                     }
                     className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
                   />
+
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    Learning intent
+                    <select
+                      value={noteIntent}
+                      onChange={(e) => setNoteIntent(e.target.value as NoteIntent)}
+                      className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                    >
+                      <option value="correction">Correction (override wrong advice)</option>
+                      <option value="bad_advice">Bad advice (override wrong advice)</option>
+                      <option value="good_advice">Good advice (reinforce this guidance)</option>
+                    </select>
+                  </label>
 
                   <div className="flex flex-wrap items-center gap-2">
                     <button

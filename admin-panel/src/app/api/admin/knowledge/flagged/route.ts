@@ -23,7 +23,9 @@ export async function GET(req: NextRequest) {
 
   const { data: grades, error: gradesErr } = await supabase
     .from("answer_grades")
-    .select("id, audit_id, overall, auto_flagged, flag_reason, scores, created_at")
+    .select(
+      "id, audit_id, overall, auto_flagged, flag_reason, reason_code, severity, scores, grounding_score, contradiction_score, uncertainty, queue_decision, created_at",
+    )
     .order("created_at", { ascending: false })
     .limit(window);
   if (gradesErr) return NextResponse.json({ error: gradesErr.message }, { status: 500 });
@@ -32,9 +34,15 @@ export async function GET(req: NextRequest) {
   const flagged = gradeRows.filter((g) => g.auto_flagged);
 
   const breakdown: Record<string, number> = {};
+  const severity_breakdown: Record<string, number> = {};
+  const reason_code_breakdown: Record<string, number> = {};
   for (const g of flagged) {
     const key = (g.flag_reason ?? "unspecified").toString();
     breakdown[key] = (breakdown[key] ?? 0) + 1;
+    const sev = (g.severity ?? "unknown").toString();
+    severity_breakdown[sev] = (severity_breakdown[sev] ?? 0) + 1;
+    const rc = (g.reason_code ?? "unspecified").toString();
+    reason_code_breakdown[rc] = (reason_code_breakdown[rc] ?? 0) + 1;
   }
 
   const flaggedAuditIds = flagged.slice(0, itemsLimit).map((g) => g.audit_id);
@@ -82,8 +90,14 @@ export async function GET(req: NextRequest) {
         assistant_preview: (a.assistant_text ?? "").slice(0, 280),
         evidence_count: ev.length,
         reason: g.flag_reason ?? "unspecified",
+        reason_code: g.reason_code ?? "unspecified",
+        severity: g.severity ?? "medium",
         overall: g.overall,
         scores: g.scores,
+        grounding_score: g.grounding_score ?? null,
+        contradiction_score: g.contradiction_score ?? null,
+        uncertainty: g.uncertainty ?? null,
+        queue_decision: g.queue_decision ?? null,
         queue_id: q?.id ?? null,
         queue_status: q?.status ?? null,
         created_at: a.created_at,
@@ -97,6 +111,8 @@ export async function GET(req: NextRequest) {
     flagged_count: flagged.length,
     flagged_pct: gradeRows.length > 0 ? Math.round((flagged.length / gradeRows.length) * 100) : 0,
     breakdown,
+    severity_breakdown,
+    reason_code_breakdown,
     items,
   });
 }

@@ -203,6 +203,19 @@ function renderDownloadsBlock(rows: EvidenceRow[]): string {
   ].join("\n");
 }
 
+function renderSnippetOverrideBlock(rows: EvidenceRow[]): string {
+  const overrideSnippets = rows
+    .filter((r) => r.type === "snippet")
+    .filter((r) => /learning intent:\s*(correction|bad_advice)/i.test(r.text))
+    .slice(0, 3);
+  if (!overrideSnippets.length) return "";
+  const lines = ["### PRIORITY CORRECTION SNIPPETS (prefer over older guidance)"];
+  for (const r of overrideSnippets) {
+    lines.push(`- [E${r.idx}] ${r.text.slice(0, 700)}`);
+  }
+  return lines.join("\n");
+}
+
 /// Loads `knowledge_documents.display_title` + `file_url` for every unique
 /// document_id referenced by the retrieved chunks, in one round-trip. Keeps
 /// the per-turn latency flat even with many chunks.
@@ -471,6 +484,7 @@ Deno.serve(async (req) => {
       : "");
 
   const evidenceBlock = ragInjectIntoPrompt ? renderEvidenceBlock(evidence) : "";
+  const snippetOverrideBlock = ragInjectIntoPrompt ? renderSnippetOverrideBlock(evidence) : "";
   const downloadsBlock = ragInjectIntoPrompt ? renderDownloadsBlock(evidence) : "";
 
   const runtimeAddon = [
@@ -478,6 +492,7 @@ Deno.serve(async (req) => {
     profileBlock,
     resolverBlock,
     canonicalBlock,
+    snippetOverrideBlock,
     evidenceBlock,
     downloadsBlock,
   ]

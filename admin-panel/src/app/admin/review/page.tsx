@@ -28,6 +28,8 @@ type QueueItem = {
   source: string;
   priority: string;
   reason: string;
+  triage_bucket: string | null;
+  cluster_key: string | null;
   proposed_title: string | null;
   proposed_law_text: string | null;
   proposed_machine_model: string | null;
@@ -80,6 +82,10 @@ export default function ReviewPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reviewer, setReviewer] = useState("admin");
+  const [sourceTab, setSourceTab] = useState<
+    "all" | "auto_flag" | "admin_manual" | "admin_synthesized" | "admin_training" | "conflict"
+  >("all");
+  const [triageTab, setTriageTab] = useState<"all" | "critical" | "high" | "medium" | "low">("all");
 
   const [instructions, setInstructions] = useState<Record<string, string>>({});
   const [advanced, setAdvanced] = useState<Record<string, AdvancedEdits>>({});
@@ -214,7 +220,28 @@ export default function ReviewPage() {
     }
   }
 
-  const counts = useMemo(() => ({ shown: items.length }), [items.length]);
+  const sourceCounts = useMemo(() => {
+    const out = {
+      all: items.length,
+      auto_flag: 0,
+      admin_manual: 0,
+      admin_synthesized: 0,
+      admin_training: 0,
+      conflict: 0,
+    };
+    for (const it of items) {
+      if (it.source in out) {
+        (out as any)[it.source] += 1;
+      }
+    }
+    return out;
+  }, [items]);
+
+  const visibleItems = useMemo(() => {
+    let out = sourceTab === "all" ? items : items.filter((it) => it.source === sourceTab);
+    if (triageTab !== "all") out = out.filter((it) => (it.triage_bucket ?? "low") === triageTab);
+    return out;
+  }, [items, sourceTab, triageTab]);
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-6">
@@ -267,8 +294,51 @@ export default function ReviewPage() {
             className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
           />
           <span className="ml-auto text-xs text-slate-500">
-            {counts.shown} items
+            {visibleItems.length} shown · {items.length} total
           </span>
+        </section>
+
+        <section className="flex flex-wrap gap-2 rounded-xl border border-slate-800 bg-slate-900 p-3">
+          {(
+            [
+              ["all", "All"],
+              ["auto_flag", "Auto-flag"],
+              ["admin_manual", "Manual notes"],
+              ["admin_synthesized", "Synthesized notes"],
+              ["admin_training", "Training"],
+              ["conflict", "Conflicts"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setSourceTab(id)}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium ${
+                sourceTab === id
+                  ? "bg-red-600 text-white"
+                  : "bg-slate-950 text-slate-300 border border-slate-700"
+              }`}
+            >
+              {label} ({sourceCounts[id]})
+            </button>
+          ))}
+        </section>
+
+        <section className="flex flex-wrap gap-2 rounded-xl border border-slate-800 bg-slate-900 p-3">
+          {(["all", "critical", "high", "medium", "low"] as const).map((id) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTriageTab(id)}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium ${
+                triageTab === id
+                  ? "bg-red-600 text-white"
+                  : "bg-slate-950 text-slate-300 border border-slate-700"
+              }`}
+            >
+              {id}
+            </button>
+          ))}
         </section>
 
         {error ? (
@@ -280,12 +350,13 @@ export default function ReviewPage() {
         {loading ? <p className="text-sm text-slate-400">Loading…</p> : null}
 
         <div className="space-y-4">
-          {items.length === 0 && !loading ? (
+          {visibleItems.length === 0 && !loading ? (
             <p className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-400">
-              Queue is clear for status={status}.
+              Queue is clear for status={status}
+              {sourceTab !== "all" ? `, source=${sourceTab}` : ""}.
             </p>
           ) : null}
-          {items.map((it) => {
+          {visibleItems.map((it) => {
             const adv =
               advanced[it.id] ?? {
                 title: "",
@@ -319,7 +390,7 @@ export default function ReviewPage() {
                   <span>{new Date(it.created_at).toLocaleString()}</span>
                   <span className="ml-auto text-slate-500">
                     {it.proposed_product_slug ?? "general"} ·{" "}
-                    {it.proposed_machine_model ?? "—"}
+                    {it.proposed_machine_model ?? "—"} · {(it.triage_bucket ?? "low").toUpperCase()}
                   </span>
                 </header>
 

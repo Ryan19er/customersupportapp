@@ -10,6 +10,8 @@ type Status = {
   pending_review: number;
   avg_grade_last_200: number | null;
   flagged_pct_last_200: number;
+  severity_counts_last_200: Record<string, number>;
+  reason_code_counts_last_200: Record<string, number>;
   per_product: Record<string, number>;
   recent_documents: Array<{
     id: string;
@@ -77,8 +79,14 @@ type FlaggedItem = {
   assistant_preview: string;
   evidence_count: number;
   reason: string;
+  reason_code: string;
+  severity: string;
   overall: number | null;
   scores: Record<string, number> | null;
+  grounding_score: number | null;
+  contradiction_score: number | null;
+  uncertainty: number | null;
+  queue_decision: string | null;
   queue_id: string | null;
   queue_status: string | null;
   created_at: string;
@@ -90,8 +98,19 @@ type FlaggedResp = {
   flagged_count: number;
   flagged_pct: number;
   breakdown: Record<string, number>;
+  severity_breakdown: Record<string, number>;
+  reason_code_breakdown: Record<string, number>;
   items: FlaggedItem[];
   error?: string;
+};
+
+type QualityTrends = {
+  days: number;
+  daily: Array<{ day: string; graded: number; flagged: number; flagged_pct: number }>;
+  reason_counts: Record<string, number>;
+  severity_counts: Record<string, number>;
+  queue_decision_counts: Record<string, number>;
+  recurring_topics: Array<{ topic: string; count: number }>;
 };
 
 // Plain-English explanations for every flag reason grade-answer can emit.
@@ -119,6 +138,8 @@ export default function KnowledgePage() {
   const [flaggedLoading, setFlaggedLoading] = useState(false);
   const [flaggedError, setFlaggedError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [trends, setTrends] = useState<QualityTrends | null>(null);
+  const [trendsError, setTrendsError] = useState<string | null>(null);
 
   // Upload panel state.
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
@@ -173,10 +194,26 @@ export default function KnowledgePage() {
     }
   }, []);
 
+  const loadTrends = useCallback(async () => {
+    setTrendsError(null);
+    try {
+      const res = await fetch("/api/admin/knowledge/quality-trends?days=14");
+      const { parsed, data } = await readJsonBody<QualityTrends & { error?: string }>(res);
+      if (!parsed || !data || !res.ok) {
+        setTrendsError(data?.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      setTrends(data);
+    } catch (e) {
+      setTrendsError(e instanceof Error ? e.message : "Failed to load");
+    }
+  }, []);
+
   useEffect(() => {
     void load();
     void loadFlagged();
-  }, [load, loadFlagged]);
+    void loadTrends();
+  }, [load, loadFlagged, loadTrends]);
 
   const uploadAll = useCallback(async () => {
     if (uploadFiles.length === 0 || uploadBusy) return;
@@ -316,6 +353,75 @@ export default function KnowledgePage() {
                 warn={data.flagged_pct_last_200 > 15}
                 help="Share of the last 200 AI replies the auto-grader marked for review. High = the AI is answering things we don't have good docs for. See 'Why are answers getting flagged?' below to fix it."
               />
+            </section>
+
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+              <h2 className="mb-2 font-semibold">Advanced grader telemetry (last 200)</h2>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="rounded border border-slate-800 bg-slate-950 p-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Severity distribution</p>
+                  <p className="mt-2 text-sm text-slate-300">
+                    {Object.entries(data.severity_counts_last_200 ?? {})
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([k, v]) => `${k}: ${v}`)
+                      .join(" · ") || "—"}
+                  </p>
+                </div>
+                <div className="rounded border border-slate-800 bg-slate-950 p-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Top reason codes</p>
+                  <p className="mt-2 text-sm text-slate-300">
+                    {Object.entries(data.reason_code_counts_last_200 ?? {})
+                      .sort((a, b) => b[1] - a[1])
+                      .slice(0, 6)
+                      .map(([k, v]) => `${k}: ${v}`)
+                      .join(" · ") || "—"}
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="font-semibold">Quality trends (14 days)</h2>
+                <button
+                  type="button"
+                  onClick={() => void loadTrends()}
+                  className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300"
+                >
+                  Refresh
+                </button>
+              </div>
+              {trendsError ? <p className="mt-2 text-sm text-amber-300">{trendsError}</p> : null}
+              {!trends ? (
+                <p className="mt-2 text-sm text-slate-500">Loading trends…</p>
+              ) : (
+                <>
+                  <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {trends.daily.slice(-7).map((d) => (
+                      <div key={d.day} className="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm">
+                        <span className="text-slate-300">{d.day}</span>
+                        <span className="ml-2 text-slate-500">
+                          graded {d.graded} · flagged {d.flagged} ({d.flagged_pct}%)
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-3 text-xs text-slate-500">
+                    Queue decisions:{" "}
+                    {Object.entries(trends.queue_decision_counts ?? {})
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([k, v]) => `${k} (${v})`)
+                      .join(" · ") || "—"}
+                  </p>
+                  <p className="mt-2 text-xs text-slate-500">
+                    Top recurring topics:{" "}
+                    {trends.recurring_topics
+                      .slice(0, 5)
+                      .map((t) => `${t.topic} (${t.count})`)
+                      .join(" · ") || "—"}
+                  </p>
+                </>
+              )}
             </section>
 
             {/* -----------------------------------------------------------
@@ -557,6 +663,12 @@ export default function KnowledgePage() {
                               <span className="mr-2 inline-block rounded bg-amber-900/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-200">
                                 {it.reason}
                               </span>
+                            <span className="mr-2 inline-block rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-200">
+                              {it.reason_code}
+                            </span>
+                            <span className="mr-2 inline-block rounded bg-red-900/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-red-200">
+                              {it.severity}
+                            </span>
                               <span className="text-slate-300">
                                 {it.user_query?.slice(0, 160) ?? "(empty query)"}
                               </span>
@@ -586,6 +698,9 @@ export default function KnowledgePage() {
                                     .join(" · ")}
                                 </p>
                               ) : null}
+                              <p className="mb-2 text-slate-500">
+                                grounding {typeof it.grounding_score === "number" ? it.grounding_score.toFixed(2) : "—"} · contradiction {typeof it.contradiction_score === "number" ? it.contradiction_score.toFixed(2) : "—"} · uncertainty {typeof it.uncertainty === "number" ? it.uncertainty.toFixed(2) : "—"} · queue {it.queue_decision ?? "—"}
+                              </p>
                               <div className="flex flex-wrap gap-2">
                                 {it.session_id ? (
                                   <Link

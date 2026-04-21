@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
   const { data, error } = await supabase
     .from("correction_review_queue")
     .select(
-      "id, correction_id, canonical_knowledge_id, audit_id, source, priority, reason, proposed_title, proposed_law_text, proposed_machine_model, proposed_product_slug, status, reviewed_by, reviewed_at, review_notes, created_by, created_at",
+      "id, correction_id, canonical_knowledge_id, audit_id, source, priority, reason, triage_bucket, cluster_key, proposed_title, proposed_law_text, proposed_machine_model, proposed_product_slug, status, reviewed_by, reviewed_at, review_notes, created_by, created_at",
     )
     .eq("status", status)
     .order("created_at", { ascending: false })

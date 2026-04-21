@@ -18,6 +18,7 @@ const noteSchema = z.object({
   created_by: z.string().min(1),
   tags: z.array(z.string()).default([]),
   prior_assistant_summary: z.string().optional().nullable(),
+  note_intent: z.enum(["good_advice", "bad_advice", "correction"]).default("correction"),
 });
 
 export async function GET(req: NextRequest) {
@@ -104,6 +105,7 @@ export async function POST(req: NextRequest) {
       fixSteps: payload.fix_steps,
       partsUsed: payload.parts_used ?? null,
       tags: payload.tags,
+      noteIntent: payload.note_intent,
       createdBy: payload.created_by,
       techNoteId: note.id,
     });

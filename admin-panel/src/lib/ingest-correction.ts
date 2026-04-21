@@ -22,6 +22,7 @@ type IngestInput = {
   fixSteps: string;
   partsUsed?: string | null;
   tags: string[];
+  noteIntent?: "good_advice" | "bad_advice" | "correction";
   createdBy: string;
   /** Force canonical to go straight to active (bypasses review queue). */
   autoApproveCanonical?: boolean;
@@ -47,6 +48,8 @@ export async function ingestCorrection(
   canonicalStatus: "draft" | "active";
 }> {
   const tags = normalizeTags(input.tags);
+  const noteIntent = input.noteIntent ?? "correction";
+  const isOverrideIntent = noteIntent === "bad_advice" || noteIntent === "correction";
 
   const correctionInsert = await supabase
     .from("corrections")
@@ -83,6 +86,9 @@ export async function ingestCorrection(
   const correctionId = correctionInsert.data.id as string;
 
   const lawText = [
+    isOverrideIntent
+      ? "Correction intent: this note overrides prior incorrect AI guidance for matching symptoms/model."
+      : "Guidance intent: this note reinforces correct AI guidance for matching symptoms/model.",
     `When symptoms match: ${input.symptoms}`,
     input.priorAiSummary?.trim() ? `Previous AI guidance: ${input.priorAiSummary.trim()}` : null,
     `Verified root cause: ${input.rootCause}`,
@@ -106,11 +112,12 @@ export async function ingestCorrection(
   // the caller explicitly requests auto-approval (migration backfill / admin override).
   const canonicalStatus: "draft" | "active" = input.autoApproveCanonical ? "active" : "draft";
 
+  const canonicalTitleSuffix = isOverrideIntent ? "field correction" : "field guidance";
   const canonInsert = await supabase
     .from("canonical_knowledge")
     .insert({
       correction_id: correctionId,
-      title: (input.machineModel?.trim() || productSlug || "General") + " field correction",
+      title: (input.machineModel?.trim() || productSlug || "General") + ` ${canonicalTitleSuffix}`,
       law_text: lawText,
       machine_model: input.machineModel ?? null,
       machine_serial: input.machineSerial ?? null,
@@ -173,6 +180,7 @@ export async function ingestCorrection(
     fix_steps: input.fixSteps,
     parts_used: input.partsUsed ?? null,
     prior_assistant_summary: input.priorAiSummary ?? null,
+    note_intent: noteIntent,
     tags,
   });
   const snippetEmbedding = await embedSingle(snippetText);
@@ -192,7 +200,7 @@ export async function ingestCorrection(
     symptom_tags: symptomTags,
     error_codes: errorCodes,
     embedding: snippetEmbedding,
-    confidence: 0.7,
+    confidence: isOverrideIntent ? 0.95 : 0.7,
     status: "active",
   };
 
@@ -234,6 +242,13 @@ export async function ingestCorrection(
         : input.source === "synthesized_note"
         ? "admin_synthesized"
         : "admin_training";
+    const reason =
+      (conflictId
+        ? "Potential conflict with existing canonical guidance"
+        : "New canonical rule awaiting admin approval") +
+      (noteIntent === "good_advice"
+        ? " (intent: good_advice)"
+        : " (intent: correction)");
     const { data: q } = await supabase
       .from("correction_review_queue")
       .insert({
@@ -241,10 +256,8 @@ export async function ingestCorrection(
         canonical_knowledge_id: canonInsert.data.id,
         source: conflictId ? "conflict" : source,
         priority: conflictId ? "high" : "normal",
-        reason: conflictId
-          ? "Potential conflict with existing canonical guidance"
-          : "New canonical rule awaiting admin approval",
-        proposed_title: (input.machineModel?.trim() || productSlug || "General") + " field correction",
+        reason,
+        proposed_title: (input.machineModel?.trim() || productSlug || "General") + ` ${canonicalTitleSuffix}`,
         proposed_law_text: lawText,
         proposed_machine_model: input.machineModel ?? null,
         proposed_product_slug: productSlug,
@@ -266,7 +279,7 @@ export async function ingestCorrection(
     .maybeSingle();
 
   await supabase.from("runtime_learning_revisions").insert({
-    reason: "correction_ingested",
+    reason: `correction_ingested:${noteIntent}`,
     correction_id: correctionId,
     prompt_version_id: promptRow?.id ?? null,
   });
