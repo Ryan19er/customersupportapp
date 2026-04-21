@@ -103,6 +103,35 @@ type TrainingChatMsg = {
 };
 
 type NoteIntent = "good_advice" | "bad_advice" | "correction";
+type ReviewStatus = "pending" | "approved" | "rejected" | "edited";
+type ReviewSourceTab =
+  | "all"
+  | "auto_flag"
+  | "admin_manual"
+  | "admin_synthesized"
+  | "admin_training"
+  | "conflict";
+type ReviewTriageTab = "all" | "critical" | "high" | "medium" | "low";
+
+type ReviewQueueItem = {
+  id: string;
+  source: string;
+  priority: string;
+  reason: string;
+  triage_bucket: string | null;
+  proposed_title: string | null;
+  proposed_law_text: string | null;
+  proposed_machine_model: string | null;
+  proposed_product_slug: string | null;
+  status: string;
+  reviewed_by: string | null;
+  created_at: string;
+  audit: {
+    id: string;
+    user_query: string | null;
+    assistant_text: string | null;
+  } | null;
+};
 
 export default function AdminPage() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -110,18 +139,9 @@ export default function AdminPage() {
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [busyMessages, setBusyMessages] = useState(false);
 
-  const [noteBusy, setNoteBusy] = useState(false);
   const [noteStatus, setNoteStatus] = useState<string>("");
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [createdBy, setCreatedBy] = useState("admin");
-  const [symptoms, setSymptoms] = useState("");
-  const [rootCause, setRootCause] = useState("");
-  const [fixSteps, setFixSteps] = useState("");
-  const [partsUsed, setPartsUsed] = useState("");
-  const [machineModel, setMachineModel] = useState("");
-  const [machineSerial, setMachineSerial] = useState("");
-  const [tags, setTags] = useState("");
-  const [priorAssistantSummary, setPriorAssistantSummary] = useState("");
   const [noteIntent, setNoteIntent] = useState<NoteIntent>("correction");
 
   // One-shot correction flow: admin types what was really wrong, hits the
@@ -165,6 +185,16 @@ export default function AdminPage() {
   const [selectedPromptKey, setSelectedPromptKey] = useState("support-system");
   const [promptKeys, setPromptKeys] = useState<string[]>(["support-system"]);
   const [sessionFilter, setSessionFilter] = useState("");
+  const [reviewItems, setReviewItems] = useState<ReviewQueueItem[]>([]);
+  const [reviewStatusFilter, setReviewStatusFilter] = useState<ReviewStatus>("pending");
+  const [reviewSourceTab, setReviewSourceTab] = useState<ReviewSourceTab>("all");
+  const [reviewTriageTab, setReviewTriageTab] = useState<ReviewTriageTab>("all");
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewInstructions, setReviewInstructions] = useState<Record<string, string>>({});
+  const [reviewBusyId, setReviewBusyId] = useState<string | null>(null);
+  const [reviewStatusMsg, setReviewStatusMsg] = useState<Record<string, string>>({});
+  const [highlightedReviewId, setHighlightedReviewId] = useState<string | null>(null);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === selectedSessionId) ?? null,
@@ -201,6 +231,32 @@ export default function AdminPage() {
         t.created_by.toLowerCase().includes(q),
     );
   }, [trainingThreads, trainingThreadFilter]);
+
+  const reviewSourceCounts = useMemo(() => {
+    const out = {
+      all: reviewItems.length,
+      auto_flag: 0,
+      admin_manual: 0,
+      admin_synthesized: 0,
+      admin_training: 0,
+      conflict: 0,
+    };
+    for (const it of reviewItems) {
+      if (it.source in out) (out as Record<string, number>)[it.source] += 1;
+    }
+    return out;
+  }, [reviewItems]);
+
+  const visibleReviewItems = useMemo(() => {
+    let out =
+      reviewSourceTab === "all"
+        ? reviewItems
+        : reviewItems.filter((it) => it.source === reviewSourceTab);
+    if (reviewTriageTab !== "all") {
+      out = out.filter((it) => (it.triage_bucket ?? "low") === reviewTriageTab);
+    }
+    return out;
+  }, [reviewItems, reviewSourceTab, reviewTriageTab]);
 
   const loadSessions = useCallback(async () => {
     setApiError(null);
@@ -360,6 +416,34 @@ export default function AdminPage() {
     }
   }, []);
 
+  const loadReviewQueue = useCallback(async (status: ReviewStatus = reviewStatusFilter) => {
+    setReviewLoading(true);
+    setReviewError(null);
+    try {
+      const res = await fetch(`/api/admin/review?status=${status}`);
+      const { parsed, data, parseError } = await readJsonBody<{
+        items?: ReviewQueueItem[];
+        error?: string;
+      }>(res);
+      if (!parsed || !data) {
+        setReviewError(parseError ?? "Invalid response from server");
+        setReviewItems([]);
+        return;
+      }
+      if (!res.ok) {
+        setReviewError(data.error ?? `HTTP ${res.status}`);
+        setReviewItems([]);
+        return;
+      }
+      setReviewItems(data.items ?? []);
+    } catch (e) {
+      setReviewError(e instanceof Error ? e.message : "Failed to load review queue");
+      setReviewItems([]);
+    } finally {
+      setReviewLoading(false);
+    }
+  }, [reviewStatusFilter]);
+
   const loadTrainingThreads = useCallback(async () => {
     setTrainingThreadsError(null);
     setTrainingThreadsBusy(true);
@@ -437,6 +521,29 @@ export default function AdminPage() {
   }, [loadCustomerQuestionQueue, loadSessions, loadPromptKeys]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sp = new URLSearchParams(window.location.search);
+    const deepWorkspace = sp.get("workspace");
+    const deepReviewStatus = sp.get("review_status");
+    const deepReviewId = sp.get("review_id");
+    if (deepWorkspace === "conversations") setWorkspace("conversations");
+    if (
+      deepReviewStatus === "pending" ||
+      deepReviewStatus === "approved" ||
+      deepReviewStatus === "rejected" ||
+      deepReviewStatus === "edited"
+    ) {
+      setReviewStatusFilter(deepReviewStatus);
+    }
+    if (deepReviewId) setHighlightedReviewId(deepReviewId);
+  }, []);
+
+  useEffect(() => {
+    if (workspace !== "conversations") return;
+    void loadReviewQueue(reviewStatusFilter);
+  }, [workspace, loadReviewQueue, reviewStatusFilter]);
+
+  useEffect(() => {
     if (workspace !== "training") return;
     void loadTrainingThreads();
   }, [workspace, loadTrainingThreads]);
@@ -461,88 +568,9 @@ export default function AdminPage() {
     void loadAudits(selectedSessionId, channel);
   }, [loadAudits, loadMessages, selectedSessionId, sessions]);
 
-  async function saveNote() {
-    if (!activeSession) return;
-    setNoteBusy(true);
-    setNoteStatus("");
-    try {
-      const res = await fetch("/api/admin/notes", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          conversation_channel: activeSession.channel,
-          contact_id: activeSession.contact_id ?? null,
-          session_id: activeSession.id,
-          message_id: selectedMessageId,
-          symptoms,
-          root_cause: rootCause,
-          fix_steps: fixSteps,
-          parts_used: partsUsed || null,
-          machine_model: machineModel || null,
-          machine_serial: machineSerial || null,
-          created_by: createdBy,
-          tags: tags
-            .split(",")
-            .map((t) => t.trim())
-            .filter(Boolean),
-          prior_assistant_summary: priorAssistantSummary.trim() || null,
-          note_intent: noteIntent,
-          publish_now: true,
-        }),
-      });
-      const { parsed, data } = await readJsonBody<{
-        error?: string;
-        ingestion?: {
-          correctionId?: string;
-          conflictId?: string | null;
-          reviewQueueId?: string | null;
-          canonicalStatus?: "draft" | "active";
-        };
-      }>(res);
-      if (!parsed || !data) {
-        setNoteStatus(`Save failed (HTTP ${res.status})`);
-        return;
-      }
-      if (!res.ok) {
-        setNoteStatus(data.error ?? "Failed to save note");
-        return;
-      }
-      const correctionId = data.ingestion?.correctionId;
-      const conflictId = data.ingestion?.conflictId;
-      const queueId = data.ingestion?.reviewQueueId;
-      const canonicalStatus = data.ingestion?.canonicalStatus;
-      const parts: string[] = [];
-      parts.push(`Correction ${correctionId ?? "n/a"} saved.`);
-      parts.push("Field snippet is live for the next customer chat turn.");
-      if (canonicalStatus === "draft" && queueId) {
-        parts.push(`Canonical rule queued for review (${queueId}).`);
-      } else if (canonicalStatus === "active") {
-        parts.push("Canonical rule is live.");
-      }
-      if (conflictId) parts.push(`Conflict flagged (${conflictId}).`);
-      if (noteIntent === "good_advice") {
-        parts.push("Tagged as good advice.");
-      } else {
-        parts.push("Tagged as correction override.");
-      }
-      setNoteStatus(parts.join(" "));
-      setSymptoms("");
-      setRootCause("");
-      setFixSteps("");
-      setPartsUsed("");
-      setMachineModel("");
-      setMachineSerial("");
-      setTags("");
-      setPriorAssistantSummary("");
-    } finally {
-      setNoteBusy(false);
-    }
-  }
-
   async function applyOwnerCorrection(msg: string): Promise<boolean> {
     if (!msg.trim() || !activeSession) return false;
     setCorrectionBusy(true);
-    setNoteBusy(true);
     setNoteStatus("Teaching the AI…");
     setLastCorrectionId(null);
     setVerifyAnswer(null);
@@ -618,7 +646,6 @@ export default function AdminPage() {
       return true;
     } finally {
       setCorrectionBusy(false);
-      setNoteBusy(false);
     }
   }
 
@@ -803,6 +830,53 @@ export default function AdminPage() {
     if (res.ok) await loadCustomerQuestionQueue();
   }
 
+  async function teachReviewItem(it: ReviewQueueItem) {
+    const instruction = (reviewInstructions[it.id] ?? "").trim();
+    if (!instruction) {
+      setReviewStatusMsg((s) => ({ ...s, [it.id]: "Type a correction first." }));
+      return;
+    }
+    setReviewBusyId(it.id);
+    setReviewStatusMsg((s) => ({ ...s, [it.id]: "Teaching the AI…" }));
+    try {
+      const res = await fetch("/api/admin/review/teach", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: it.id, instruction, reviewed_by: createdBy }),
+      });
+      const { parsed, data } = await readJsonBody<{ error?: string }>(res);
+      if (!parsed || !data || !res.ok) {
+        setReviewStatusMsg((s) => ({ ...s, [it.id]: data?.error ?? `HTTP ${res.status}` }));
+        return;
+      }
+      setReviewInstructions((s) => ({ ...s, [it.id]: "" }));
+      setReviewStatusMsg((s) => ({ ...s, [it.id]: "Applied and published live." }));
+      await loadReviewQueue(reviewStatusFilter);
+    } finally {
+      setReviewBusyId(null);
+    }
+  }
+
+  async function reviewSimpleAction(it: ReviewQueueItem, action: "approve" | "reject") {
+    setReviewBusyId(it.id);
+    try {
+      const res = await fetch("/api/admin/review", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: it.id, action, reviewed_by: createdBy }),
+      });
+      const { parsed, data } = await readJsonBody<{ error?: string }>(res);
+      if (!parsed || !data || !res.ok) {
+        setReviewStatusMsg((s) => ({ ...s, [it.id]: data?.error ?? `HTTP ${res.status}` }));
+        return;
+      }
+      setReviewStatusMsg((s) => ({ ...s, [it.id]: action === "approve" ? "Approved." : "Rejected." }));
+      await loadReviewQueue(reviewStatusFilter);
+    } finally {
+      setReviewBusyId(null);
+    }
+  }
+
   async function savePromptVersion() {
     if (!promptText.trim() || !changeSummary.trim()) return;
     setPromptBusy(true);
@@ -901,18 +975,13 @@ export default function AdminPage() {
             >
               Knowledge
             </Link>
-            <Link
-              href="/admin/review"
-              className="rounded-md border border-emerald-700 bg-emerald-900/30 px-3 py-2 text-sm text-emerald-200"
-            >
-              Review queue
-            </Link>
             <button
               type="button"
               onClick={() => {
                 void loadSessions();
                 void loadTrainingThreads();
                 void loadCustomerQuestionQueue();
+                void loadReviewQueue(reviewStatusFilter);
               }}
               className="rounded-md border border-slate-600 px-3 py-2 text-sm text-slate-300"
             >
@@ -1294,6 +1363,161 @@ export default function AdminPage() {
                     >
                       {ownerChatBusy ? "Saving…" : "Send"}
                     </button>
+                  </div>
+                </section>
+
+                <section className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="font-semibold">Pending review queue (merged here)</h2>
+                    <span className="text-xs text-slate-500">
+                      {visibleReviewItems.length} shown · {reviewItems.length} total
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 rounded border border-slate-800 bg-slate-950 p-2">
+                    <label className="text-xs text-slate-400">Status</label>
+                    <select
+                      value={reviewStatusFilter}
+                      onChange={(e) => setReviewStatusFilter(e.target.value as ReviewStatus)}
+                      className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                    >
+                      <option value="pending">Pending</option>
+                      <option value="approved">Approved</option>
+                      <option value="edited">Edited</option>
+                      <option value="rejected">Rejected</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => void loadReviewQueue(reviewStatusFilter)}
+                      className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {(
+                      [
+                        ["all", "All"],
+                        ["auto_flag", "Auto-flag"],
+                        ["admin_manual", "Manual notes"],
+                        ["admin_synthesized", "Synthesized"],
+                        ["admin_training", "Training"],
+                        ["conflict", "Conflicts"],
+                      ] as const
+                    ).map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setReviewSourceTab(id)}
+                        className={`rounded-md px-2 py-1 text-xs ${
+                          reviewSourceTab === id
+                            ? "bg-red-600 text-white"
+                            : "border border-slate-700 bg-slate-950 text-slate-300"
+                        }`}
+                      >
+                        {label} ({reviewSourceCounts[id]})
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {(["all", "critical", "high", "medium", "low"] as const).map((id) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setReviewTriageTab(id)}
+                        className={`rounded-md px-2 py-1 text-xs uppercase ${
+                          reviewTriageTab === id
+                            ? "bg-red-600 text-white"
+                            : "border border-slate-700 bg-slate-950 text-slate-300"
+                        }`}
+                      >
+                        {id}
+                      </button>
+                    ))}
+                  </div>
+
+                  {reviewError ? <p className="text-sm text-amber-300">{reviewError}</p> : null}
+                  {reviewLoading ? <p className="text-sm text-slate-400">Loading review queue…</p> : null}
+                  {!reviewLoading && visibleReviewItems.length === 0 ? (
+                    <p className="text-sm text-slate-500">No review items for this filter.</p>
+                  ) : null}
+
+                  <div className="space-y-3">
+                    {visibleReviewItems.map((it) => (
+                      <article
+                        key={it.id}
+                        id={`review-${it.id}`}
+                        className={`rounded border p-3 ${
+                          highlightedReviewId === it.id
+                            ? "border-emerald-500 bg-slate-800"
+                            : "border-slate-800 bg-slate-950"
+                        }`}
+                      >
+                        <p className="text-xs text-slate-400">
+                          {it.source} · {(it.triage_bucket ?? "low").toUpperCase()} ·{" "}
+                          {new Date(it.created_at).toLocaleString()}
+                        </p>
+                        <p className="mt-1 text-sm text-amber-200">{it.reason}</p>
+                        {it.audit ? (
+                          <div className="mt-2 space-y-1 rounded border border-slate-800 bg-slate-900 p-2 text-xs">
+                            <p className="text-slate-300">
+                              <span className="text-slate-500">Customer:</span> {it.audit.user_query ?? "—"}
+                            </p>
+                            <p className="text-slate-300">
+                              <span className="text-slate-500">AI:</span> {it.audit.assistant_text ?? "—"}
+                            </p>
+                          </div>
+                        ) : null}
+                        <textarea
+                          value={reviewInstructions[it.id] ?? ""}
+                          onChange={(e) =>
+                            setReviewInstructions((s) => ({ ...s, [it.id]: e.target.value }))
+                          }
+                          rows={3}
+                          disabled={reviewBusyId === it.id || it.status !== "pending"}
+                          placeholder="How should the AI have answered?"
+                          className="mt-2 w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                        />
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void teachReviewItem(it)}
+                            disabled={
+                              reviewBusyId === it.id ||
+                              it.status !== "pending" ||
+                              !(reviewInstructions[it.id] ?? "").trim()
+                            }
+                            className="rounded bg-sky-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                          >
+                            Teach the AI
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void reviewSimpleAction(it, "approve")}
+                            disabled={reviewBusyId === it.id || it.status !== "pending"}
+                            className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void reviewSimpleAction(it, "reject")}
+                            disabled={reviewBusyId === it.id || it.status !== "pending"}
+                            className="rounded bg-red-700 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                          >
+                            Reject
+                          </button>
+                          <span className="ml-auto text-xs text-slate-500">
+                            Status: {it.status}
+                            {it.reviewed_by ? ` · ${it.reviewed_by}` : ""}
+                          </span>
+                        </div>
+                        {reviewStatusMsg[it.id] ? (
+                          <p className="mt-2 text-xs text-slate-300">{reviewStatusMsg[it.id]}</p>
+                        ) : null}
+                      </article>
+                    ))}
                   </div>
                 </section>
               </>

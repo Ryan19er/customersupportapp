@@ -161,7 +161,7 @@ export default function KnowledgePage() {
         return;
       }
       if (!res.ok) {
-        setError((data as any).error ?? `HTTP ${res.status}`);
+        setError(data.error ?? `HTTP ${res.status}`);
         return;
       }
       setData(data as Status);
@@ -311,10 +311,10 @@ export default function KnowledgePage() {
               Back to dashboard
             </Link>
             <Link
-              href="/admin/review"
+              href="/admin?workspace=conversations&review_status=pending"
               className="rounded-md border border-emerald-700 bg-emerald-900/30 px-3 py-2 text-sm text-emerald-200"
             >
-              Review queue
+              Corrections workspace
             </Link>
             <button
               type="button"
@@ -712,10 +712,10 @@ export default function KnowledgePage() {
                                 ) : null}
                                 {it.queue_id ? (
                                   <Link
-                                    href={`/admin/review?status=${it.queue_status ?? "pending"}#${it.queue_id}`}
+                                    href={`/admin?workspace=conversations&review_status=${it.queue_status ?? "pending"}&review_id=${it.queue_id}`}
                                     className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-200"
                                   >
-                                    Open review-queue entry
+                                    Open correction item
                                   </Link>
                                 ) : (
                                   <span className="text-[11px] text-slate-500">
@@ -757,7 +757,7 @@ export default function KnowledgePage() {
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
               <h2 className="mb-2 font-semibold">Recently ingested documents</h2>
               <p className="mb-3 text-xs text-slate-500">
-                Everything below is live in the AI's knowledge base. Files with a download link
+                Everything below is live in the AI&apos;s knowledge base. Files with a download link
                 will be offered to customers in chat when relevant.
               </p>
               <div className="space-y-2">

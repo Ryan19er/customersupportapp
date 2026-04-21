@@ -46,10 +46,9 @@ export function AdminHelp() {
         <p className="mt-2 text-sm leading-relaxed text-slate-300">
           After you find the real problem on site, use this form so the next person (and the AI)
           benefits from what you learned. The field-verified snippet auto-applies immediately so
-          the next similar customer chat uses it. The stronger &quot;canonical rule&quot; version of
-          the correction is saved as a <strong className="text-slate-200">draft</strong> and lands
-          in the <a className="underline" href="/admin/review">Correction Review Queue</a>. An
-          admin approves (or edits + approves) it there before it becomes live customer-AI law.
+          the next similar customer chat uses it. Canonical review is handled in the same
+          dashboard under Customer chats and notes, so correction, approval, and publishing happen
+          in one workspace.
         </p>
         <ul className="mt-3 list-inside list-disc space-y-2 text-sm leading-relaxed text-slate-300">
           <li>
@@ -138,12 +137,12 @@ export function AdminHelp() {
       </section>
 
       <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-        <h2 className="text-lg font-semibold text-white">Auto-grader &amp; review queue</h2>
+        <h2 className="text-lg font-semibold text-white">Auto-grader and corrections</h2>
         <p className="mt-2 text-sm leading-relaxed text-slate-300">
           Every AI reply is scored on product match, factual accuracy, safety, helpfulness,
-          evidence usage and resolved-likelihood. Low scores auto-file to the{' '}
-          <a className="underline" href="/admin/review">Correction Review Queue</a> so admins can
-          approve the fix and publish it as canonical law.
+          evidence usage and resolved-likelihood. Flagged items now appear directly in the
+          Customer chats and notes workspace, where admins can teach, approve, or reject without
+          switching tabs.
         </p>
       </section>
 
