@@ -1,26 +1,19 @@
-"use client";
+import { redirect } from "next/navigation";
 
-import { useEffect } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+type ReviewRedirectPageProps = {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+};
 
-export default function ReviewRedirectPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-
-  useEffect(() => {
-    const status = searchParams.get("status") ?? "pending";
-    const hash = typeof window !== "undefined" ? window.location.hash.replace(/^#/, "") : "";
-    const next = `/admin?workspace=conversations&review_status=${encodeURIComponent(status)}${
-      hash ? `&review_id=${encodeURIComponent(hash)}` : ""
-    }`;
-    router.replace(next);
-  }, [router, searchParams]);
-
-  return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 p-6">
-      <p className="text-sm text-slate-400">
-        Redirecting to Customer chats and notes correction workspace...
-      </p>
-    </main>
-  );
+export default async function ReviewRedirectPage({ searchParams }: ReviewRedirectPageProps) {
+  const sp = (await searchParams) ?? {};
+  const statusRaw = sp.status;
+  const reviewIdRaw = sp.review_id;
+  const status = Array.isArray(statusRaw) ? statusRaw[0] : statusRaw;
+  const reviewId = Array.isArray(reviewIdRaw) ? reviewIdRaw[0] : reviewIdRaw;
+  const normalizedStatus =
+    status === "approved" || status === "rejected" || status === "edited" ? status : "pending";
+  const next = `/admin?workspace=conversations&review_status=${encodeURIComponent(normalizedStatus)}${
+    reviewId ? `&review_id=${encodeURIComponent(reviewId)}` : ""
+  }`;
+  redirect(next);
 }
