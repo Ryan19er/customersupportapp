@@ -1353,3 +1353,137 @@ alter table public.correction_review_queue
 
 create index if not exists correction_review_queue_cluster_idx
   on public.correction_review_queue (cluster_key, status, created_at desc);
+
+-- =============================================================================
+-- 019_vision_training_system.sql
+-- =============================================================================
+create table if not exists public.vision_training_images (
+  id uuid primary key default gen_random_uuid(),
+  source text not null default 'admin_upload',
+  source_session_channel text,
+  source_session_id uuid,
+  source_message_id uuid,
+  storage_bucket text not null default 'vision-training-images',
+  storage_path text not null,
+  mime_type text not null default 'image/jpeg',
+  uploaded_by text not null,
+  uploaded_at timestamptz not null default now(),
+  product_slug text,
+  machine_model text,
+  material_type text,
+  thickness_mm numeric(8,3),
+  gas_type text,
+  label_primary text,
+  defect_tags text[] not null default '{}',
+  severity text,
+  label_status text not null default 'pending',
+  reviewed_by text,
+  reviewed_at timestamptz,
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.vision_training_images
+  drop constraint if exists vision_training_images_label_primary_check;
+alter table public.vision_training_images
+  add constraint vision_training_images_label_primary_check
+  check (label_primary is null or label_primary in ('good_cut','bad_cut','nozzle_issue'));
+
+alter table public.vision_training_images
+  drop constraint if exists vision_training_images_severity_check;
+alter table public.vision_training_images
+  add constraint vision_training_images_severity_check
+  check (severity is null or severity in ('low','medium','high','critical'));
+
+alter table public.vision_training_images
+  drop constraint if exists vision_training_images_label_status_check;
+alter table public.vision_training_images
+  add constraint vision_training_images_label_status_check
+  check (label_status in ('pending','reviewed','approved','rejected'));
+
+create index if not exists vision_training_images_status_idx
+  on public.vision_training_images (label_status, created_at desc);
+create index if not exists vision_training_images_source_idx
+  on public.vision_training_images (source, created_at desc);
+create index if not exists vision_training_images_product_idx
+  on public.vision_training_images (product_slug, machine_model, created_at desc);
+
+create table if not exists public.vision_training_annotations (
+  id uuid primary key default gen_random_uuid(),
+  image_id uuid not null references public.vision_training_images(id) on delete cascade,
+  annotation_mode text not null default 'manual',
+  label_primary text,
+  defect_tags text[] not null default '{}',
+  likely_causes jsonb not null default '[]'::jsonb,
+  recommended_checks jsonb not null default '[]'::jsonb,
+  regions jsonb not null default '[]'::jsonb,
+  confidence numeric(4,3),
+  notes text,
+  created_by text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.vision_training_annotations
+  drop constraint if exists vision_training_annotations_mode_check;
+alter table public.vision_training_annotations
+  add constraint vision_training_annotations_mode_check
+  check (annotation_mode in ('manual','ai_assist'));
+
+create index if not exists vision_training_annotations_image_idx
+  on public.vision_training_annotations (image_id, created_at desc);
+
+create table if not exists public.vision_diagnosis_audit (
+  id uuid primary key default gen_random_uuid(),
+  session_channel text not null default 'support',
+  session_id uuid,
+  message_id uuid,
+  image_id uuid references public.vision_training_images(id) on delete set null,
+  image_url text,
+  product_slug text,
+  machine_model text,
+  classification text,
+  defects_detected jsonb not null default '[]'::jsonb,
+  likely_causes jsonb not null default '[]'::jsonb,
+  recommended_checks jsonb not null default '[]'::jsonb,
+  confidence numeric(4,3),
+  annotated_regions jsonb not null default '[]'::jsonb,
+  supporting_training_ids uuid[] not null default '{}',
+  raw_model_response jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists vision_diagnosis_audit_created_idx
+  on public.vision_diagnosis_audit (created_at desc);
+
+create table if not exists public.vision_diagnosis_review_queue (
+  id uuid primary key default gen_random_uuid(),
+  diagnosis_audit_id uuid not null references public.vision_diagnosis_audit(id) on delete cascade,
+  image_id uuid references public.vision_training_images(id) on delete set null,
+  queue_reason text not null,
+  queue_priority text not null default 'medium',
+  status text not null default 'pending',
+  reviewed_by text,
+  reviewed_at timestamptz,
+  resolution_notes text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.vision_diagnosis_review_queue
+  drop constraint if exists vision_diagnosis_review_queue_priority_check;
+alter table public.vision_diagnosis_review_queue
+  add constraint vision_diagnosis_review_queue_priority_check
+  check (queue_priority in ('low','medium','high','critical'));
+
+alter table public.vision_diagnosis_review_queue
+  drop constraint if exists vision_diagnosis_review_queue_status_check;
+alter table public.vision_diagnosis_review_queue
+  add constraint vision_diagnosis_review_queue_status_check
+  check (status in ('pending','resolved','dismissed'));
+
+create index if not exists vision_diagnosis_review_queue_status_idx
+  on public.vision_diagnosis_review_queue (status, created_at desc);
+
+insert into storage.buckets (id, name, public)
+values ('vision-training-images', 'vision-training-images', true)
+on conflict (id) do nothing;

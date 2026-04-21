@@ -123,12 +123,20 @@ class AnthropicClaudeService {
     return out;
   }
 
-  static Map<String, dynamic> _userMessagePayload(String text) {
+  static Map<String, dynamic> _userMessagePayload(String text, {List<String> imageUrls = const []}) {
+    final content = <Map<String, dynamic>>[
+      {'type': 'text', 'text': text},
+    ];
+    for (final url in imageUrls) {
+      if (!url.startsWith('http')) continue;
+      content.add({
+        'type': 'image',
+        'source': {'type': 'url', 'url': url},
+      });
+    }
     return {
       'role': 'user',
-      'content': [
-        {'type': 'text', 'text': text},
-      ],
+      'content': content,
     };
   }
 
@@ -152,6 +160,7 @@ class AnthropicClaudeService {
     String? sessionId,
     String? sessionChannel,
     bool includeRuntimeContext = false,
+    List<String> nextUserImageUrls = const [],
   }) async {
     final raw = await _invoke(
       history: history,
@@ -161,6 +170,7 @@ class AnthropicClaudeService {
       sessionId: sessionId,
       sessionChannel: sessionChannel,
       includeRuntimeContext: includeRuntimeContext,
+      nextUserImageUrls: nextUserImageUrls,
     );
     return raw;
   }
@@ -173,6 +183,7 @@ class AnthropicClaudeService {
     String? sessionId,
     String? sessionChannel,
     bool includeRuntimeContext = false,
+    List<String> nextUserImageUrls = const [],
   }) async {
     final reply = await _invoke(
       history: history,
@@ -182,6 +193,7 @@ class AnthropicClaudeService {
       sessionId: sessionId,
       sessionChannel: sessionChannel,
       includeRuntimeContext: includeRuntimeContext,
+      nextUserImageUrls: nextUserImageUrls,
     );
     return reply.text;
   }
@@ -194,6 +206,7 @@ class AnthropicClaudeService {
     String? sessionId,
     String? sessionChannel,
     bool includeRuntimeContext = false,
+    List<String> nextUserImageUrls = const [],
   }) async {
     var merged = _mergeAlternating([
       ...history,
@@ -209,12 +222,13 @@ class AnthropicClaudeService {
       if (turn.role == 'assistant') {
         messages.add(_assistantMessagePayload(turn.text));
       } else {
-        messages.add(_userMessagePayload(turn.text));
+        final isLast = identical(turn, merged.last) && turn.role == 'user';
+        messages.add(_userMessagePayload(turn.text, imageUrls: isLast ? nextUserImageUrls : const []));
       }
     }
 
     if (messages.isEmpty) {
-      messages.add(_userMessagePayload(nextUserMessage.trim()));
+      messages.add(_userMessagePayload(nextUserMessage.trim(), imageUrls: nextUserImageUrls));
     }
 
     final base = systemPromptOverride ?? systemPrompt;
@@ -304,6 +318,7 @@ class AnthropicClaudeService {
     String? sessionId,
     String? sessionChannel,
     bool includeRuntimeContext = false,
+    List<String> nextUserImageUrls = const [],
   }) async* {
     var merged = _mergeAlternating([
       ...history,
@@ -318,11 +333,12 @@ class AnthropicClaudeService {
       if (turn.role == 'assistant') {
         messages.add(_assistantMessagePayload(turn.text));
       } else {
-        messages.add(_userMessagePayload(turn.text));
+        final isLast = identical(turn, merged.last) && turn.role == 'user';
+        messages.add(_userMessagePayload(turn.text, imageUrls: isLast ? nextUserImageUrls : const []));
       }
     }
     if (messages.isEmpty) {
-      messages.add(_userMessagePayload(nextUserMessage.trim()));
+      messages.add(_userMessagePayload(nextUserMessage.trim(), imageUrls: nextUserImageUrls));
     }
 
     final base = systemPromptOverride ?? systemPrompt;

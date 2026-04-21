@@ -39,3 +39,25 @@ Single live deployment for grading + review subsystem.
 - Watch flagged rate, severity mix, queue decision mix.
 - Verify critical/high incidents are always queued.
 - Verify queue volume is reduced for repeated medium/low noise.
+
+## Vision Diagnosis Addendum
+### Additional Deployment Order
+1. Apply migration `019_vision_training_system.sql`.
+2. Verify storage bucket `vision-training-images` exists and is writable.
+3. Deploy admin vision APIs (`/api/admin/vision/*`).
+4. Deploy `anthropic-chat` with vision runtime support.
+5. Deploy Flutter + admin UI changes.
+
+### Vision Smoke Checks
+1. Upload one admin image in Vision training tab and save manual labels.
+2. Approve the image and confirm `vision_training_images.label_status='approved'`.
+3. Send a customer chat with one image attachment:
+   - Confirm row exists in `vision_diagnosis_audit`.
+   - Confirm low/unknown confidence creates `vision_diagnosis_review_queue` row.
+4. Resolve one queue row in admin and confirm status flips to `resolved`.
+
+### Vision Rollback
+- Disable image upload in frontend (feature flag or temporary UI hide).
+- Stop vision queue processing if needed; keep existing text chat live.
+- If diagnosis quality regresses, revert to prior edge-function deploy while
+  keeping tables (additive schema).

@@ -1,6 +1,7 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -51,6 +52,7 @@ class _ChatScreenState extends State<ChatScreen> {
   // Live streaming buffer: shown in place of the "typing..." bubble so the
   // user sees the reply being written in real-time (~500ms to first token).
   String _streamingAssistant = '';
+  List<String> _pendingImageUrls = [];
   // Evidence for the most-recent assistant reply, rendered as an accordion.
   List<EvidenceCitation> _lastEvidence = const [];
   String? _lastResolvedProduct;
@@ -114,22 +116,22 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _send() async {
     final text = _input.text.trim();
-    if (text.isEmpty || _sessionId == null || _sending) return;
-    final startedAt = DateTime.now();
-
+    if ((text.isEmpty && _pendingImageUrls.isEmpty) || _sessionId == null || _sending) return;
     setState(() {
       _sending = true;
       _streamingAssistant = '';
       _error = null;
     });
     _input.clear();
+    final imageUrls = List<String>.from(_pendingImageUrls);
+    _pendingImageUrls = [];
     _scrollToEnd();
 
     try {
       ClaudeReply? lastReply;
       await widget.repository.appendExchange(
         sessionId: _sessionId!,
-        userText: text,
+        userText: text.isEmpty && imageUrls.isNotEmpty ? 'Customer uploaded images for diagnosis.' : text,
         getAssistant: (prior, userMsg) async {
           final history = prior
               .map(
@@ -143,6 +145,7 @@ class _ChatScreenState extends State<ChatScreen> {
           await for (final evt in _claude.completeStream(
             history: history,
             nextUserMessage: userMsg,
+            nextUserImageUrls: imageUrls,
             additionalSystemContext: widget.profile.anthropicContextBlock,
             sessionId: _sessionId,
             sessionChannel: widget.repository.sessionChannel,
@@ -186,6 +189,26 @@ class _ChatScreenState extends State<ChatScreen> {
     } finally {
       if (mounted) setState(() => _sending = false);
       _refocusInput();
+    }
+  }
+
+  Future<void> _pickAndAttachImage() async {
+    if (_sessionId == null || _sending) return;
+    final picked = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
+    final file = picked?.files.first;
+    if (file == null || file.bytes == null) return;
+    try {
+      final url = await widget.repository.uploadCustomerVisionImage(
+        sessionId: _sessionId!,
+        bytes: file.bytes!,
+        fileName: file.name,
+        mimeType: file.extension == null ? 'image/jpeg' : 'image/${file.extension}',
+      );
+      if (!mounted) return;
+      setState(() => _pendingImageUrls = [..._pendingImageUrls, url]);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = 'Image upload failed: $e');
     }
   }
 
@@ -395,6 +418,11 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     ),
                     const SizedBox(width: 8),
+                    IconButton(
+                      onPressed: _sending ? null : _pickAndAttachImage,
+                      icon: const Icon(Icons.add_photo_alternate_outlined),
+                      tooltip: 'Attach image',
+                    ),
                     FilledButton(
                       onPressed: _sending ? null : _send,
                       style: FilledButton.styleFrom(
@@ -415,6 +443,21 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
+            if (_pendingImageUrls.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                child: Wrap(
+                  spacing: 6,
+                  children: _pendingImageUrls
+                      .map(
+                        (u) => Chip(
+                          label: const Text('image'),
+                          onDeleted: () => setState(() => _pendingImageUrls.remove(u)),
+                        ),
+                      )
+                      .toList(),
+                ),
+              ),
           ],
         ),
         ),

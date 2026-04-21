@@ -1,4 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'dart:typed_data';
 
 import '../models/customer_profile.dart';
 import '../models/stored_chat_message.dart';
@@ -293,6 +294,34 @@ class ChatRepository {
       return;
     }
     await _client.auth.signOut();
+  }
+
+  Future<String> uploadCustomerVisionImage({
+    required String sessionId,
+    required Uint8List bytes,
+    required String fileName,
+    required String mimeType,
+  }) async {
+    final bucket = 'vision-training-images';
+    final ext = fileName.contains('.') ? fileName.split('.').last : 'jpg';
+    final path = 'customer/${DateTime.now().millisecondsSinceEpoch}_${contactId ?? _userId ?? "anon"}.$ext';
+    await _client.storage.from(bucket).uploadBinary(
+      path,
+      bytes,
+      fileOptions: FileOptions(contentType: mimeType, upsert: false),
+    );
+    final publicUrl = _client.storage.from(bucket).getPublicUrl(path);
+    await _client.from('vision_training_images').insert({
+      'source': 'customer_chat',
+      'source_session_channel': sessionChannel,
+      'source_session_id': sessionId,
+      'storage_bucket': bucket,
+      'storage_path': path,
+      'mime_type': mimeType,
+      'uploaded_by': contactId ?? _userId ?? 'customer',
+      'label_status': 'pending',
+    });
+    return publicUrl;
   }
 
   Future<void> insertChatMessage({

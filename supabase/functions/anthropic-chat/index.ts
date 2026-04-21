@@ -20,7 +20,7 @@ const corsHeaders: Record<string, string> = {
 
 type IncomingMessage = {
   role: "user" | "assistant";
-  content: Array<{ type: "text"; text: string }>;
+  content: Array<{ type: string; text?: string; source?: Record<string, unknown> }>;
 };
 
 type ResolverPayload = {
@@ -115,12 +115,94 @@ async function fetchProfileBlock(db: ReturnType<typeof createClient>, resolver: 
 function messagesToTextWindow(messages: IncomingMessage[], limit = 8): { lastUser: string; recent: string } {
   const texts = messages.map((m) => ({
     role: m.role,
-    text: (m.content ?? []).map((c) => c?.text ?? "").join(" ").trim(),
+    text: (m.content ?? [])
+      .map((c) => (c?.type === "text" ? c?.text ?? "" : ""))
+      .join(" ")
+      .trim(),
   }));
   const tail = texts.slice(-limit);
   const lastUser = [...tail].reverse().find((t) => t.role === "user")?.text ?? "";
   const recent = tail.map((t) => `${t.role}: ${t.text}`).join("\n");
   return { lastUser, recent };
+}
+
+function extractImageUrlsFromMessages(messages: IncomingMessage[]): string[] {
+  const urls: string[] = [];
+  for (const m of messages) {
+    if (m.role !== "user") continue;
+    for (const c of m.content ?? []) {
+      if (c.type !== "image") continue;
+      const url = String((c.source as any)?.url ?? "").trim();
+      if (url.startsWith("http")) urls.push(url);
+    }
+  }
+  return Array.from(new Set(urls));
+}
+
+function extractConfidenceFromText(text: string): number | null {
+  const m = /confidence\s*[:=]\s*(0?\.\d+|1(?:\.0+)?)/i.exec(text);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(1, n));
+}
+
+async function writeVisionDiagnosisAudit(params: {
+  db: ReturnType<typeof createClient>;
+  resolver: ResolverPayload;
+  productSlug: string | null;
+  machineModel: string | null;
+  imageUrl: string;
+  assistantText: string;
+}): Promise<void> {
+  const confidence = extractConfidenceFromText(params.assistantText);
+  const { data, error } = await params.db
+    .from("vision_diagnosis_audit")
+    .insert({
+      session_channel: params.resolver.session_channel ?? "support",
+      session_id: params.resolver.session_id ?? null,
+      image_url: params.imageUrl,
+      product_slug: params.productSlug,
+      machine_model: params.machineModel,
+      confidence,
+      raw_model_response: { text: params.assistantText.slice(0, 16000) },
+    })
+    .select("id")
+    .single();
+  if (error || !data) return;
+  if (confidence === null || confidence < 0.65) {
+    await params.db.from("vision_diagnosis_review_queue").insert({
+      diagnosis_audit_id: (data as any).id,
+      queue_reason:
+        confidence === null
+          ? "Vision response missing confidence; requires admin review."
+          : `Low confidence vision diagnosis (${confidence.toFixed(2)}).`,
+      queue_priority: confidence !== null && confidence < 0.4 ? "high" : "medium",
+      status: "pending",
+    });
+  }
+}
+
+async function fetchApprovedVisionExamples(
+  db: ReturnType<typeof createClient>,
+  productSlug: string | null,
+): Promise<string> {
+  const q = db
+    .from("vision_training_images")
+    .select("id,label_primary,defect_tags,notes,machine_model,product_slug")
+    .eq("label_status", "approved")
+    .order("reviewed_at", { ascending: false })
+    .limit(8);
+  const { data } = productSlug ? await q.eq("product_slug", productSlug) : await q;
+  const rows = (data as any[] | null) ?? [];
+  if (!rows.length) return "";
+  const lines = ["### APPROVED VISION EXAMPLES (admin-labeled)"];
+  for (const r of rows) {
+    lines.push(
+      `- ${r.label_primary ?? "unlabeled"} | tags=${(r.defect_tags ?? []).join(",") || "none"} | model=${r.machine_model ?? "general"} | notes=${String(r.notes ?? "").slice(0, 220)}`,
+    );
+  }
+  return lines.join("\n");
 }
 
 async function embedQueryDirect(query: string): Promise<number[] | null> {
@@ -374,6 +456,7 @@ Deno.serve(async (req) => {
   // parallel. Previously these were sequential and added ~1-2s of dead
   // time before Claude even started generating.
   const { lastUser, recent } = messagesToTextWindow(messages);
+  const imageUrls = extractImageUrlsFromMessages(messages);
 
   const profilePromise: Promise<string> =
     db && resolver.include_runtime_context && resolver.session_channel && resolver.session_id
@@ -425,6 +508,8 @@ Deno.serve(async (req) => {
     promptVersionPromise,
     canonicalRowsPromise,
   ]);
+  const approvedVisionBlock =
+    db && resolver.include_runtime_context ? await fetchApprovedVisionExamples(db, resolved.product_slug) : "";
 
   let evidence: EvidenceRow[] = [];
   if (ragEnabled && lastUser && db && vec) {
@@ -492,6 +577,7 @@ Deno.serve(async (req) => {
     profileBlock,
     resolverBlock,
     canonicalBlock,
+    approvedVisionBlock,
     snippetOverrideBlock,
     evidenceBlock,
     downloadsBlock,
@@ -582,6 +668,20 @@ Deno.serve(async (req) => {
         promptVersionId: activePromptRow?.id ?? null, model: body.model, latencyMs,
       });
       if (auditId) scheduleGrade(auditId);
+      if (imageUrls.length) {
+        try {
+          await writeVisionDiagnosisAudit({
+            db,
+            resolver,
+            productSlug: resolved.product_slug,
+            machineModel: resolved.machine_family,
+            imageUrl: imageUrls[imageUrls.length - 1],
+            assistantText: text,
+          });
+        } catch {
+          /* no-op */
+        }
+      }
     }
     return json({
       text,
@@ -665,6 +765,16 @@ Deno.serve(async (req) => {
             promptVersionId: activePromptRow?.id ?? null, model: body.model, latencyMs,
           });
           if (auditId) scheduleGrade(auditId);
+          if (imageUrls.length) {
+            await writeVisionDiagnosisAudit({
+              db,
+              resolver,
+              productSlug: resolved.product_slug,
+              machineModel: resolved.machine_family,
+              imageUrl: imageUrls[imageUrls.length - 1],
+              assistantText: acc,
+            });
+          }
         } catch (err) {
           console.warn("[chat] audit persist failed", (err as Error).message);
         }

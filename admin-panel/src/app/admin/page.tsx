@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { readJsonBody } from "@/lib/safe-fetch-json";
 import { AdminHelp } from "./AdminHelp";
 
@@ -133,6 +134,35 @@ type ReviewQueueItem = {
   } | null;
 };
 
+type VisionImageRow = {
+  id: string;
+  source: string;
+  label_status: string;
+  label_primary: string | null;
+  defect_tags: string[];
+  product_slug: string | null;
+  machine_model: string | null;
+  material_type: string | null;
+  thickness_mm: number | null;
+  gas_type: string | null;
+  notes: string | null;
+  created_at: string;
+  public_url: string;
+};
+
+type VisionQueueRow = {
+  id: string;
+  queue_reason: string;
+  queue_priority: string;
+  status: string;
+  created_at: string;
+  vision_diagnosis_audit?: {
+    classification?: string | null;
+    confidence?: number | null;
+    image_url?: string | null;
+  } | null;
+};
+
 export default function AdminPage() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
@@ -175,7 +205,7 @@ export default function AdminPage() {
   const [promptVersions, setPromptVersions] = useState<PromptVersion[]>([]);
   const [activeTab, setActiveTab] = useState<"main" | "info">("main");
 
-  const [workspace, setWorkspace] = useState<"conversations" | "prompts" | "training">("conversations");
+  const [workspace, setWorkspace] = useState<"conversations" | "prompts" | "training" | "vision">("conversations");
   const [apiError, setApiError] = useState<string | null>(null);
   const [sessionLoadWarnings, setSessionLoadWarnings] = useState<string[]>([]);
   const [messagesError, setMessagesError] = useState<string | null>(null);
@@ -195,6 +225,23 @@ export default function AdminPage() {
   const [reviewBusyId, setReviewBusyId] = useState<string | null>(null);
   const [reviewStatusMsg, setReviewStatusMsg] = useState<Record<string, string>>({});
   const [highlightedReviewId, setHighlightedReviewId] = useState<string | null>(null);
+  const [selectedReviewIds, setSelectedReviewIds] = useState<string[]>([]);
+  const [bulkReviewBusy, setBulkReviewBusy] = useState(false);
+  const [visionImages, setVisionImages] = useState<VisionImageRow[]>([]);
+  const [visionQueue, setVisionQueue] = useState<VisionQueueRow[]>([]);
+  const [visionMetrics, setVisionMetrics] = useState<Record<string, unknown> | null>(null);
+  const [visionBusy, setVisionBusy] = useState(false);
+  const [visionError, setVisionError] = useState<string | null>(null);
+  const [visionStatusFilter, setVisionStatusFilter] = useState("pending");
+  const [visionSourceFilter, setVisionSourceFilter] = useState("all");
+  const [visionSelectedId, setVisionSelectedId] = useState<string | null>(null);
+  const [visionLabelPrimary, setVisionLabelPrimary] = useState("bad_cut");
+  const [visionDefectTags, setVisionDefectTags] = useState("");
+  const [visionLikelyCauses, setVisionLikelyCauses] = useState("");
+  const [visionChecks, setVisionChecks] = useState("");
+  const [visionNotes, setVisionNotes] = useState("");
+  const [visionUploadFile, setVisionUploadFile] = useState<File | null>(null);
+  const [visionAiDraft, setVisionAiDraft] = useState("");
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === selectedSessionId) ?? null,
@@ -257,6 +304,22 @@ export default function AdminPage() {
     }
     return out;
   }, [reviewItems, reviewSourceTab, reviewTriageTab]);
+
+  const selectableVisibleReviewIds = useMemo(
+    () => visibleReviewItems.filter((it) => it.status === "pending").map((it) => it.id),
+    [visibleReviewItems],
+  );
+
+  const visibleVisionImages = useMemo(() => {
+    let out = visionImages;
+    if (visionSourceFilter !== "all") out = out.filter((x) => x.source === visionSourceFilter);
+    return out;
+  }, [visionImages, visionSourceFilter]);
+
+  const selectedVisionImage = useMemo(
+    () => visionImages.find((x) => x.id === visionSelectedId) ?? null,
+    [visionImages, visionSelectedId],
+  );
 
   const loadSessions = useCallback(async () => {
     setApiError(null);
@@ -444,6 +507,40 @@ export default function AdminPage() {
     }
   }, [reviewStatusFilter]);
 
+  const loadVisionWorkspace = useCallback(async () => {
+    setVisionBusy(true);
+    setVisionError(null);
+    try {
+      const [imagesRes, queueRes, metricsRes] = await Promise.all([
+        fetch(
+          `/api/admin/vision/images?status=${encodeURIComponent(
+            visionStatusFilter,
+          )}${visionSourceFilter !== "all" ? `&source=${encodeURIComponent(visionSourceFilter)}` : ""}`,
+        ),
+        fetch("/api/admin/vision/queue?status=pending"),
+        fetch("/api/admin/vision/metrics"),
+      ]);
+      const [{ parsed: imagesParsed, data: imagesData }, { parsed: queueParsed, data: queueData }, { parsed: metricsParsed, data: metricsData }] =
+        await Promise.all([
+          readJsonBody<{ items?: VisionImageRow[]; error?: string }>(imagesRes),
+          readJsonBody<{ items?: VisionQueueRow[]; error?: string }>(queueRes),
+          readJsonBody<Record<string, unknown> & { error?: string }>(metricsRes),
+        ]);
+      if (!imagesParsed || !imagesData || !imagesRes.ok) {
+        setVisionError(imagesData?.error ?? `Vision images failed (HTTP ${imagesRes.status})`);
+        return;
+      }
+      setVisionImages(imagesData.items ?? []);
+      if (queueParsed && queueData && queueRes.ok) setVisionQueue(queueData.items ?? []);
+      if (metricsParsed && metricsData && metricsRes.ok) setVisionMetrics(metricsData);
+      setVisionSelectedId((prev) => prev ?? imagesData.items?.[0]?.id ?? null);
+    } catch (e) {
+      setVisionError(e instanceof Error ? e.message : "Failed to load vision workspace");
+    } finally {
+      setVisionBusy(false);
+    }
+  }, [visionSourceFilter, visionStatusFilter]);
+
   const loadTrainingThreads = useCallback(async () => {
     setTrainingThreadsError(null);
     setTrainingThreadsBusy(true);
@@ -544,9 +641,18 @@ export default function AdminPage() {
   }, [workspace, loadReviewQueue, reviewStatusFilter]);
 
   useEffect(() => {
+    setSelectedReviewIds((prev) => prev.filter((id) => selectableVisibleReviewIds.includes(id)));
+  }, [selectableVisibleReviewIds]);
+
+  useEffect(() => {
     if (workspace !== "training") return;
     void loadTrainingThreads();
   }, [workspace, loadTrainingThreads]);
+
+  useEffect(() => {
+    if (workspace !== "vision") return;
+    void loadVisionWorkspace();
+  }, [workspace, loadVisionWorkspace]);
 
   useEffect(() => {
     if (!selectedTrainingThreadId) {
@@ -877,6 +983,128 @@ export default function AdminPage() {
     }
   }
 
+  async function bulkReviewAction(action: "approve" | "reject") {
+    if (selectedReviewIds.length === 0) return;
+    setBulkReviewBusy(true);
+    try {
+      const results = await Promise.all(
+        selectedReviewIds.map(async (id) => {
+          const res = await fetch("/api/admin/review", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ id, action, reviewed_by: createdBy }),
+          });
+          return res.ok;
+        }),
+      );
+      const okCount = results.filter(Boolean).length;
+      const failCount = results.length - okCount;
+      const summary =
+        failCount === 0
+          ? `${action === "approve" ? "Approved" : "Rejected"} ${okCount} selected items.`
+          : `${action === "approve" ? "Approved" : "Rejected"} ${okCount} items, ${failCount} failed.`;
+      setReviewStatusMsg((s) => ({ ...s, __bulk__: summary }));
+      setSelectedReviewIds([]);
+      await loadReviewQueue(reviewStatusFilter);
+    } finally {
+      setBulkReviewBusy(false);
+    }
+  }
+
+  async function uploadVisionImage() {
+    if (!visionUploadFile) return;
+    setVisionBusy(true);
+    setVisionError(null);
+    try {
+      const form = new FormData();
+      form.append("file", visionUploadFile);
+      form.append("uploaded_by", createdBy);
+      form.append("source", "admin_upload");
+      form.append("label_primary", visionLabelPrimary);
+      form.append("defect_tags", visionDefectTags);
+      form.append("notes", visionNotes);
+      const res = await fetch("/api/admin/vision/upload", { method: "POST", body: form });
+      const { parsed, data } = await readJsonBody<{ error?: string }>(res);
+      if (!parsed || !data || !res.ok) {
+        setVisionError(data?.error ?? `Upload failed (HTTP ${res.status})`);
+        return;
+      }
+      setVisionUploadFile(null);
+      await loadVisionWorkspace();
+    } finally {
+      setVisionBusy(false);
+    }
+  }
+
+  async function saveVisionAnnotation() {
+    if (!selectedVisionImage) return;
+    setVisionBusy(true);
+    try {
+      const res = await fetch("/api/admin/vision/annotate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          image_id: selectedVisionImage.id,
+          created_by: createdBy,
+          annotation_mode: "manual",
+          label_primary: visionLabelPrimary,
+          defect_tags: visionDefectTags.split(",").map((x) => x.trim()).filter(Boolean),
+          likely_causes: visionLikelyCauses.split("\n").map((x) => x.trim()).filter(Boolean),
+          recommended_checks: visionChecks.split("\n").map((x) => x.trim()).filter(Boolean),
+          notes: visionNotes || null,
+          regions: [],
+        }),
+      });
+      const { parsed, data } = await readJsonBody<{ error?: string }>(res);
+      if (!parsed || !data || !res.ok) {
+        setVisionError(data?.error ?? `Annotation save failed (HTTP ${res.status})`);
+        return;
+      }
+      await loadVisionWorkspace();
+    } finally {
+      setVisionBusy(false);
+    }
+  }
+
+  async function approveVisionImage(action: "approve" | "reject") {
+    if (!selectedVisionImage) return;
+    const res = await fetch("/api/admin/vision/approve", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ image_id: selectedVisionImage.id, reviewed_by: createdBy, action }),
+    });
+    const { parsed, data } = await readJsonBody<{ error?: string }>(res);
+    if (!parsed || !data || !res.ok) {
+      setVisionError(data?.error ?? `Approve failed (HTTP ${res.status})`);
+      return;
+    }
+    await loadVisionWorkspace();
+  }
+
+  async function resolveVisionQueueItem(id: string) {
+    const res = await fetch("/api/admin/vision/queue", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id, status: "resolved", reviewed_by: createdBy }),
+    });
+    if (res.ok) await loadVisionWorkspace();
+  }
+
+  async function prelabelVisionImage() {
+    if (!selectedVisionImage) return;
+    const res = await fetch("/api/admin/vision/prelabel", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ image_id: selectedVisionImage.id }),
+    });
+    const { parsed, data } = await readJsonBody<{ text?: string; error?: string }>(res);
+    if (!parsed || !data || !res.ok) {
+      setVisionError(data?.error ?? `AI prelabel failed (HTTP ${res.status})`);
+      return;
+    }
+    setVisionAiDraft(data.text ?? "");
+  }
+
   async function savePromptVersion() {
     if (!promptText.trim() || !changeSummary.trim()) return;
     setPromptBusy(true);
@@ -1060,6 +1288,7 @@ export default function AdminPage() {
                   ["conversations", "1 · Customer chats & notes"],
                   ["prompts", "2 · Prompt files & versions"],
                   ["training", "3 · Team training & ticket queue"],
+                  ["vision", "4 · Vision training"],
                 ] as const
               ).map(([id, label]) => (
                 <button
@@ -1392,7 +1621,43 @@ export default function AdminPage() {
                     >
                       Refresh
                     </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedReviewIds((prev) =>
+                          prev.length === selectableVisibleReviewIds.length
+                            ? []
+                            : [...selectableVisibleReviewIds],
+                        )
+                      }
+                      disabled={selectableVisibleReviewIds.length === 0 || bulkReviewBusy}
+                      className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 disabled:opacity-50"
+                    >
+                      {selectedReviewIds.length === selectableVisibleReviewIds.length &&
+                      selectableVisibleReviewIds.length > 0
+                        ? "Clear all"
+                        : "Select all"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void bulkReviewAction("approve")}
+                      disabled={selectedReviewIds.length === 0 || bulkReviewBusy}
+                      className="rounded bg-emerald-700 px-2 py-1 text-xs text-white disabled:opacity-50"
+                    >
+                      {bulkReviewBusy ? "Working…" : `Approve selected (${selectedReviewIds.length})`}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void bulkReviewAction("reject")}
+                      disabled={selectedReviewIds.length === 0 || bulkReviewBusy}
+                      className="rounded bg-red-700 px-2 py-1 text-xs text-white disabled:opacity-50"
+                    >
+                      {bulkReviewBusy ? "Working…" : `Reject selected (${selectedReviewIds.length})`}
+                    </button>
                   </div>
+                  {reviewStatusMsg.__bulk__ ? (
+                    <p className="text-xs text-slate-300">{reviewStatusMsg.__bulk__}</p>
+                  ) : null}
 
                   <div className="flex flex-wrap gap-2">
                     {(
@@ -1454,6 +1719,21 @@ export default function AdminPage() {
                             : "border-slate-800 bg-slate-950"
                         }`}
                       >
+                        <label className="mb-2 flex items-center gap-2 text-xs text-slate-400">
+                          <input
+                            type="checkbox"
+                            checked={selectedReviewIds.includes(it.id)}
+                            disabled={it.status !== "pending" || bulkReviewBusy}
+                            onChange={(e) =>
+                              setSelectedReviewIds((prev) =>
+                                e.target.checked
+                                  ? Array.from(new Set([...prev, it.id]))
+                                  : prev.filter((x) => x !== it.id),
+                              )
+                            }
+                          />
+                          Select for bulk action
+                        </label>
                         <p className="text-xs text-slate-400">
                           {it.source} · {(it.triage_bucket ?? "low").toUpperCase()} ·{" "}
                           {new Date(it.created_at).toLocaleString()}
@@ -1779,6 +2059,193 @@ export default function AdminPage() {
                           </div>
                         ))}
                     </div>
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
+            {workspace === "vision" ? (
+              <section className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="font-semibold">Vision training dataset</h2>
+                  <span className="text-xs text-slate-500">
+                    Upload and manually label good cuts, bad cuts, nozzle issues, and customer chat images.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void loadVisionWorkspace()}
+                    className="ml-auto rounded border border-slate-700 px-2 py-1 text-xs text-slate-300"
+                  >
+                    Refresh
+                  </button>
+                </div>
+
+                {visionError ? <p className="text-sm text-amber-300">{visionError}</p> : null}
+                {visionBusy ? <p className="text-sm text-slate-400">Loading vision workspace…</p> : null}
+
+                <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+                  <div className="space-y-3 rounded border border-slate-800 bg-slate-950 p-3">
+                    <h3 className="text-sm font-semibold">Add image</h3>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => setVisionUploadFile(e.target.files?.[0] ?? null)}
+                      className="w-full text-xs"
+                    />
+                    <select
+                      value={visionLabelPrimary}
+                      onChange={(e) => setVisionLabelPrimary(e.target.value)}
+                      className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                    >
+                      <option value="good_cut">good_cut</option>
+                      <option value="bad_cut">bad_cut</option>
+                      <option value="nozzle_issue">nozzle_issue</option>
+                    </select>
+                    <input
+                      value={visionDefectTags}
+                      onChange={(e) => setVisionDefectTags(e.target.value)}
+                      className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                      placeholder="defect tags (comma-separated)"
+                    />
+                    <textarea
+                      value={visionNotes}
+                      onChange={(e) => setVisionNotes(e.target.value)}
+                      rows={3}
+                      className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                      placeholder="notes"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void uploadVisionImage()}
+                      disabled={!visionUploadFile}
+                      className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                    >
+                      Upload labeled image
+                    </button>
+                  </div>
+
+                  <div className="space-y-3 rounded border border-slate-800 bg-slate-950 p-3 xl:col-span-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        value={visionStatusFilter}
+                        onChange={(e) => setVisionStatusFilter(e.target.value)}
+                        className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                      >
+                        <option value="pending">pending</option>
+                        <option value="reviewed">reviewed</option>
+                        <option value="approved">approved</option>
+                        <option value="rejected">rejected</option>
+                      </select>
+                      <select
+                        value={visionSourceFilter}
+                        onChange={(e) => setVisionSourceFilter(e.target.value)}
+                        className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                      >
+                        <option value="all">all sources</option>
+                        <option value="admin_upload">admin_upload</option>
+                        <option value="customer_chat">customer_chat</option>
+                      </select>
+                    </div>
+
+                    <div className="max-h-64 overflow-auto space-y-2">
+                      {visibleVisionImages.map((img) => (
+                        <button
+                          key={img.id}
+                          type="button"
+                          onClick={() => {
+                            setVisionSelectedId(img.id);
+                            setVisionLabelPrimary(img.label_primary ?? "bad_cut");
+                            setVisionDefectTags((img.defect_tags ?? []).join(", "));
+                            setVisionNotes(img.notes ?? "");
+                          }}
+                          className={`w-full rounded border p-2 text-left ${
+                            visionSelectedId === img.id ? "border-emerald-500 bg-slate-900" : "border-slate-800 bg-slate-900/40"
+                          }`}
+                        >
+                          <p className="text-xs text-slate-400">
+                            {img.source} · {img.label_status} · {new Date(img.created_at).toLocaleString()}
+                          </p>
+                          <p className="text-sm text-slate-200">{img.label_primary ?? "unlabeled"}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {selectedVisionImage ? (
+                  <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+                    <div className="rounded border border-slate-800 bg-slate-950 p-3">
+                      <Image
+                        src={selectedVisionImage.public_url}
+                        alt="vision sample"
+                        width={640}
+                        height={360}
+                        className="h-auto w-full rounded border border-slate-800"
+                        unoptimized
+                      />
+                    </div>
+                    <div className="space-y-2 rounded border border-slate-800 bg-slate-950 p-3 xl:col-span-2">
+                      <h3 className="text-sm font-semibold">Manual annotation + approval</h3>
+                      <input
+                        value={visionLikelyCauses}
+                        onChange={(e) => setVisionLikelyCauses(e.target.value)}
+                        className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                        placeholder="Likely causes (one per line)"
+                      />
+                      <textarea
+                        value={visionChecks}
+                        onChange={(e) => setVisionChecks(e.target.value)}
+                        rows={4}
+                        className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                        placeholder="Recommended checks (one per line)"
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={() => void prelabelVisionImage()} className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-200">
+                          AI pre-label
+                        </button>
+                        <button type="button" onClick={() => void saveVisionAnnotation()} className="rounded bg-sky-600 px-3 py-1.5 text-xs font-medium text-white">
+                          Save annotation
+                        </button>
+                        <button type="button" onClick={() => void approveVisionImage("approve")} className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white">
+                          Approve for learning
+                        </button>
+                        <button type="button" onClick={() => void approveVisionImage("reject")} className="rounded bg-red-700 px-3 py-1.5 text-xs font-medium text-white">
+                          Reject
+                        </button>
+                      </div>
+                      {visionAiDraft ? (
+                        <pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded border border-slate-800 bg-slate-900 p-2 text-xs text-slate-300">
+                          {visionAiDraft}
+                        </pre>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                  <div className="rounded border border-slate-800 bg-slate-950 p-3">
+                    <h3 className="text-sm font-semibold">Customer image diagnosis queue</h3>
+                    <div className="mt-2 max-h-56 overflow-auto space-y-2">
+                      {visionQueue.map((q) => (
+                        <div key={q.id} className="rounded border border-slate-800 bg-slate-900 p-2 text-xs">
+                          <p className="text-slate-300">{q.queue_reason}</p>
+                          <p className="text-slate-500">{q.queue_priority} · {new Date(q.created_at).toLocaleString()}</p>
+                          <button
+                            type="button"
+                            onClick={() => void resolveVisionQueueItem(q.id)}
+                            className="mt-1 rounded border border-emerald-800 px-2 py-1 text-emerald-300"
+                          >
+                            Mark resolved
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded border border-slate-800 bg-slate-950 p-3">
+                    <h3 className="text-sm font-semibold">Vision metrics</h3>
+                    <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap text-xs text-slate-300">
+                      {JSON.stringify(visionMetrics ?? {}, null, 2)}
+                    </pre>
                   </div>
                 </div>
               </section>
